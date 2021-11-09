@@ -1,10 +1,8 @@
 import numpy as np
 import pyFreeFem as pyff
 
-# moduli_indices = ["11", "12", "16", "22", ]
 
-
-def free_fem_ineract(fname: str):
+def getOutput(fname: str):
     # load file with preliminaries related to FreeFem
     # mesh generation/input and definition of test point(s)
     # is here
@@ -35,3 +33,6 @@ def free_fem_ineract(fname: str):
         vLoad="array", vBC="array", interpC="matrix", xtest="real", ytest="real",
     )
     return script.get_output()
+
+def processFFOutput(ff_output: dict):
+    return (1, )*6 # stub
