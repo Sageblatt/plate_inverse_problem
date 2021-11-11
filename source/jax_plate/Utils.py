@@ -2,6 +2,8 @@ import numpy as np
 import jax
 import jax.numpy as jnp
 
+MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
+
 # TODO check if it is possible in jax to use LA and grad on dictionary (google pyTree)
 def isotropic_to_full(isotropic_params):
 

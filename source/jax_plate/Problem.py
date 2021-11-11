@@ -3,12 +3,14 @@ import scipy as sp
 
 import jax
 import jax.numpy as jnp
+import jax.scipy as jsp
 
 from .pyFFInterface import *
 
 
 class Problem:
-    """Defines the geometry and those of the parameters that are known before the experiment. Stores FEM matrices, produces differentiable jax functions.
+    """Defines the geometry and those of the parameters that are known before the experiment. 
+        Stores FEM matrices on GPU, produces differentiable jax functions.
 
     :param path_to_edp: Path to .edp file which is used to interact with FreeFem++. 
         As for now, the geometry, mesh and  test point are also defined there. 
@@ -20,8 +22,6 @@ class Problem:
     :type thickness: double
         """
 
-    MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
-
     def __init__(
         self, path_to_edp: str, thickness: np.float64, density: np.float64,
     ):
@@ -30,13 +30,35 @@ class Problem:
         self.e = thickness / 2.0
         self.rho = density
 
-        Ks, fs, M, L, interpC, test_point_coords = processFFOutput(
-            getOutput(path_to_edp)
+        processed_ff_output = processFFOutput(getOutput(path_to_edp))
+
+        # Loading necessary data from model to GPU
+        self.Ks = jnp.array(processed_ff_output["Ks"])
+        self.fKs = jnp.array(processed_ff_output["fKs"])
+        self.M = jnp.array(processed_ff_output["M"])
+        self.fM = jnp.array(processed_ff_output["fM"])
+        self.L = jnp.array(processed_ff_output["L"])
+        self.fL = jnp.array(processed_ff_output["fL"])
+        # TODO load can be not in phase with the BC vibration
+        # and both BC and load may have different phases in points
+        # so both of them have to be complex in general
+        # but it is too comlicated as for now
+        self.fLoad = jnp.array(processed_ff_output["fLoad"])
+
+        # Total (regular + rotational) inertia
+        self.MInertia = self.rho * (self.M + 1.0 / 3.0 * self.e ** 2 * self.L)
+        # BC term
+        self.fInertia = self.rho * (self.fM + 1.0 / 3.0 * self.e ** 2 * self.fL)
+
+        self.interpolation_vector = jnp.array(
+            processed_ff_output["interpolation_vector"]
         )
-        self.Ks = jnp.array(Ks)
-        self.fs = jnp.array(fs)
-        self.M = jnp.array(M)
-        self.L = jnp.array(L)
+        self.interpolation_value_from_bc = jnp.float32(
+            processed_ff_output["interpolation_value_from_bc"]
+        )
+        # TODO decide if we need to calculate in f64 in jax
+        self.test_point = processed_ff_output["test_point_coord"]
+        self.constrained_idx = processed_ff_output["constrained_idx"]
 
     def getAFCFunction(self, params_to_physical):
         """Creates function to evaluate AFC 
@@ -52,17 +74,40 @@ class Problem:
         def _solve(f, params):
             # Pseudocode of function, TODO: implement:D
             omega = 2.0 * np.pi * f
-            # D_ij, beta_ij = params_to_physical(x)
-            # K_real = -rho*omega**2*(M + 0.5*e**2) + \sum K_ij*D_ij/(2.*e)
-            # f_real = ..
-            # K_imag = \sum K_ij*D_ij*beta_ij/(2.*e)
-            # f_imag = ..
-            # construct block matrix
-            # [u, v] = block matrix^-1 *[f_real, f_imag]
-            # return [c.T@u, c.T@v]
-            return jnp.array([0.0, 0.0])  # STUB
+            e = self.e
+            D, beta = params_to_physical(params)
+            loss_moduli = beta * D
 
-        return jax.jit(jax.vmap(_solve, in_axes=(0, None), ))
+            # K_real = \sum K_ij*D_ij/(2.*e)
+            # K_imag = \sum K_ij*D_ij/(2.*e)
+            K_real = jnp.einsum(self.Ks, [0, ...], D, [0]) / 2.0 / e
+            K_imag = jnp.einsum(self.Ks, [0, ...], loss_moduli, [0]) / 2.0 / e
+
+            # f_imag = ..
+            fK_real = jnp.einsum(self.fKs, [0, ...], D, [0]) / 2.0 / e
+            fK_imag = jnp.einsum(self.fKs, [0, ...], loss_moduli, [0]) / 2.0 / e
+
+            # Formulate system (A_real + i*A_imag)(u_real + i*u_imag) = (b_real + i*b_imag)
+            # and create matrix from blocks for real solution
+            A_real = -(omega ** 2) * self.MInertia + K_real
+            A_imag = K_imag
+            b_real = -(omega ** 2) * self.fInertia + fK_real + self.fLoad / 2.0 / e
+            b_imag = fK_imag
+
+            A = jnp.vstack(
+                (jnp.hstack((A_real, -A_imag)), jnp.hstack((-A_imag, -A_real)))
+            )
+            b = jnp.concatenate((b_real, -b_imag))
+            x = jsp.linalg.solve(A, b)
+
+            u = (
+                self.interpolation_value_from_bc
+                + self.interpolation_vector @ x.reshape((-1, 2))
+            )
+
+            return u
+
+        return jax.jit(jax.vmap(_solve, in_axes=(0, None),))
 
     def getMSELossFunction(self, params_to_physical, frequencies, reference_afc):
         assert frequencies.shape[0] == reference_afc.shape[0]
