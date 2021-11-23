@@ -95,9 +95,9 @@ class Problem:
             b_imag = fK_imag
 
             A = jnp.vstack(
-                (jnp.hstack((A_real, -A_imag)), jnp.hstack((-A_imag, -A_real)))
+                (jnp.hstack((A_real, -A_imag)), jnp.hstack((A_imag, A_real)))
             )
-            b = jnp.concatenate((b_real, -b_imag))
+            b = jnp.concatenate((b_real, b_imag))
             x = jsp.linalg.solve(A, b)
 
             u = (

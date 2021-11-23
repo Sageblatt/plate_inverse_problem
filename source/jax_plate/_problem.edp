@@ -25,7 +25,6 @@ border FD(t=0, 1){x=-triSide*0.5*t; y=-triSide*sin(pi/3)*(t-2/3.);}
 int n = 10;
 plot(DE(n)+EF(n)+FD(n)+innerCircle(-n));
 mesh Th = buildmesh(DE(n)+EF(n)+FD(n)+innerCircle(-n));
-
 // Source term
 func funcSource = 0.0;
 
