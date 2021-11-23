@@ -1,0 +1,59 @@
+// Dirichlet boundary should be labelled 1
+verbosity = 0;
+
+load "Element_HCT"
+load "Morley"
+load "iovtk"
+
+// Circle 
+//border a(t=0, 2*pi){x=cos(t); y=sin(t); label=1;}
+//mesh Th = buildmesh(a(n));
+
+//// Rectangle
+//real x0 = 0., x1 = 1.;
+//real y0 = 0., y1 = 2;
+//int n = 2;
+//int[int] labs = [1,1,1,1];
+//mesh Th = square(1*n, 2*n,[x0+(x1-x0)*x,y0+(y1-y0)*y], label=labs);
+//// Triangle with hole inside (for paper tuan2015Chladni)
+real rInner = 3e-3;
+real triSide = 289*1e-3;
+// Dirichlet boundary should be labelled 1
+border innerCircle(t=0, 2*pi){x=rInner*cos(t); y=rInner*sin(t); label=1;}
+border DE(t=-1, 1){x=triSide*0.5*t; y=-1./3.*triSide*sin(pi/3);}
+border EF(t=0, 1){x=triSide*0.5*(1-t); y=triSide*sin(pi/3)*(t-1/3.);}
+border FD(t=0, 1){x=-triSide*0.5*t; y=-triSide*sin(pi/3)*(t-2/3.);}
+int n = 10;
+mesh Th = buildmesh(DE(n)+EF(n)+FD(n)+innerCircle(-n));
+
+//savevtk("mesh.vtk", Th);
+// Source term
+func funcSource = 0.0;
+
+// Boundary condition u = funcBc on Dirichlet border
+func funcBC = 1.;
+
+fespace Vh(Th, P2Morley);
+Vh [u, ux, uy], [v, vx, vy];
+
+varf Load([u, ux, uy], [v, vx, vy]) = int2d(Th)(funcSource*v) + on(1, u=0, ux=0, uy=0);
+real[int] vLoad = Load(0, Vh);
+
+varf BC([u, ux, uy], [v, vx, vy]) = on(1, u=funcBC, ux=0, uy=0);
+real[int] vBC = BC(0, Vh, tgv=-1);
+
+// Test point for AFC measurment
+real xtest = 0.0;
+real ytest = 2.0*rInner;
+// DIRTY HACK: i create a small triangle close to rtest 
+// so that even if I fuck up with indices, the difference will not be too large
+real[int] xxtest = [xtest, xtest + 1e-3, xtest + 1e-3];
+real[int] yytest = [ytest, ytest - 1e-3, ytest + 1e-3];
+// Create a surrogate mesh to produce interpolation matrix
+mesh testTh = triangulate(xxtest, yytest);
+// Create a surrogate FE space with P1 basis functions on testTh
+// As P1 basis functions are standard triangular <<caps>> which are equal to 1 
+// in nodes, the DOF in this basis are exactly u(x_i, y_i)
+fespace testVh(testTh, P1);
+int[int] u2vc = [0];
+matrix MinterpC = interpolate(testVh, Vh, U2Vc=u2vc);
