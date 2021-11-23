@@ -11,7 +11,7 @@ def getOutput(fname: str):
     # load file with preliminaries related to FreeFem
     # mesh generation/input and definition of test point(s)
     # is here
-    with open("_problem.edp", "r") as ifile:
+    with open(fname, "r") as ifile:
         _script = ifile.read()
     script = pyff.edpScript(_script)
 
