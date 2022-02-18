@@ -1,2 +1,4 @@
 .*.swp
+*.vtk
+tests/
 __pycache__

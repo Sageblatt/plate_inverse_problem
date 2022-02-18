@@ -19,16 +19,20 @@ def getOutput(fname: str):
     # ensure it in _problem.edp
     script += pyff.VarfScript(
         # Stiffness terms depending on each of the anisotropic coefs
-        K11="int2d(Th)(dxx(u)*dxx(v)) + on(1, u=0, ux=0, uy=0)",
-        K12="int2d(Th)(dyy(u)*dxx(v) + dxx(u)*dyy(v)) + on(1, u=0, ux=0, uy=0)",
-        K16="int2d(Th)(dxy(u)*dxx(v) + 2.*dxx(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
-        K22="int2d(Th)(dyy(u)*dyy(v)) + on(1, u=0, ux=0, uy=0)",
-        K26="int2d(Th)(dxy(u)*dyy(v) + 2.*dyy(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
-        K66="int2d(Th)(2.*dxy(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
+        K11="int2d(Th, qft=qfHCT5)(dxx(u)*dxx(v)) + on(1, u=0, ux=0, uy=0)",
+        K12="int2d(Th, qft=qfHCT5)(dyy(u)*dxx(v) + dxx(u)*dyy(v)) + on(1, u=0, ux=0, uy=0)",
+        K16="int2d(Th, qft=qfHCT5)(dxy(u)*dxx(v) + 2.*dxx(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
+        K22="int2d(Th, qft=qfHCT5)(dyy(u)*dyy(v)) + on(1, u=0, ux=0, uy=0)",
+        K26="int2d(Th, qft=qfHCT5)(dxy(u)*dyy(v) + 2.*dyy(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
+        K66="int2d(Th, qft=qfHCT5)(2.*dxy(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
         # Rotational inertia term
-        L="int2d(Th)(dx(u)*dx(v) + dy(u)*dy(v)) + on(1, u=0, ux=0, uy=0)",
+        L="int2d(Th, qft=qfHCT5)(dx(u)*dx(v) + dy(u)*dy(v)) + on(1, u=0, ux=0, uy=0)",
         # Mass matrix
-        M="int2d(Th)(u*v) + on(1, u=0, ux=0, uy=0)",
+        M="int2d(Th, qft=qfHCT5)(u*v) + on(1, u=0, ux=0, uy=0)",
+        # Rotational inertia term
+        LCorrection="int2d(Th, qft=qfHCT5)(indAccel*(dx(u)*dx(v) + dy(u)*dy(v))) + on(1, u=0, ux=0, uy=0)",
+        # Mass matrix
+        MCorrection="int2d(Th, qft=qfHCT5)(indAccel*(u*v)) + on(1, u=0, ux=0, uy=0)",
         # For correct usage of vectorial element
         functions=["[u, ux, uy]", "[v, vx, vy]"],
     )
@@ -100,6 +104,9 @@ def processFFOutput(ff_output: dict):
     )
     L, fL = evaluateMatrixAndRHS(ff_output["L"], f_bc)
 
+    MCorrection, fMCorrection = evaluateMatrixAndRHS(ff_output["MCorrection"], f_bc)
+    LCorrection, fLCorrection = evaluateMatrixAndRHS(ff_output["LCorrection"], f_bc)
+
     dim = M.shape[0]
     Ks = np.zeros((len(MODULI_INDICES), dim, dim))
     fKs = np.zeros((len(MODULI_INDICES), dim))
@@ -126,6 +133,10 @@ def processFFOutput(ff_output: dict):
         "fM": fM,
         "L": L,
         "fL": fL,
+        "MCorrection": MCorrection,
+        "fMCorrection": fMCorrection,
+        "LCorrection": LCorrection,
+        "fLCorrection": fLCorrection,
         "fLoad": f_load,
         "interpolation_value_from_bc": interpolation_value_from_bc,
         "interpolation_vector": interpolation_vector,

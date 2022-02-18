@@ -5,6 +5,10 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 
+from jax.config import config
+
+config.update("jax_enable_x64", True)
+
 from .pyFFInterface import *
 
 
@@ -23,7 +27,11 @@ class Problem:
         """
 
     def __init__(
-        self, path_to_edp: str, thickness: np.float64, density: np.float64,
+        self,
+        path_to_edp: str,
+        thickness: np.float64,
+        density: np.float64,
+        accelerometer_param: dict = None,
     ):
         """Constructor method"""
         self.h = thickness
@@ -33,12 +41,19 @@ class Problem:
         processed_ff_output = processFFOutput(getOutput(path_to_edp))
 
         # Loading necessary data from model to GPU
-        self.Ks = jnp.array(processed_ff_output["Ks"])
+        self.Ks = jnp.array(processed_ff_output["Ks"], dtype=jnp.float64)
         self.fKs = jnp.array(processed_ff_output["fKs"])
         self.M = jnp.array(processed_ff_output["M"])
         self.fM = jnp.array(processed_ff_output["fM"])
         self.L = jnp.array(processed_ff_output["L"])
         self.fL = jnp.array(processed_ff_output["fL"])
+
+        # Correction of the inertia matrices by the mass of the accelerometer
+        # TODO get rid of copypasta programming
+        MCorrection = jnp.array(processed_ff_output["MCorrection"])
+        fMCorrection = jnp.array(processed_ff_output["fMCorrection"])
+        LCorrection = jnp.array(processed_ff_output["LCorrection"])
+        fLCorrection = jnp.array(processed_ff_output["fLCorrection"])
         # TODO load can be not in phase with the BC vibration
         # and both BC and load may have different phases in points
         # so both of them have to be complex in general
@@ -50,6 +65,20 @@ class Problem:
         # BC term
         self.fInertia = self.rho * (self.fM + 1.0 / 3.0 * self.e ** 2 * self.fL)
 
+        if accelerometer_param is not None:
+            # TODO: check e vs 2e=h
+            rho_corr = (
+                accelerometer_param["mass"]
+                / (np.pi * accelerometer_param["radius"] ** 2)
+                / self.e
+            )
+            self.MInertia += rho_corr * (
+                MCorrection + 1.0 / 3.0 * self.e ** 2 * LCorrection
+            )
+            self.fInertia += rho_corr * (
+                fMCorrection + 1.0 / 3.0 * self.e ** 2 * fLCorrection
+            )
+
         self.interpolation_vector = jnp.array(
             processed_ff_output["interpolation_vector"]
         )
@@ -60,7 +89,7 @@ class Problem:
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
 
-    def getAFCFunction(self, params_to_physical):
+    def getAFCFunction(self, params_to_physical, batch_size=None):
         """Creates function to evaluate AFC 
             :param params_to_physical: Function that converts chosen model parameters to the physical parameters of the model,
                 D_ij storage modulus [Pa], beta_ij loss factor [1], ij in [11, 12, 16, 22, 26, 66], in total 12 parameters.
@@ -72,7 +101,6 @@ class Problem:
             """
 
         def _solve(f, params):
-            # Pseudocode of function, TODO: implement:D
             omega = 2.0 * np.pi * f
             e = self.e
             D, beta = params_to_physical(params)
@@ -95,25 +123,54 @@ class Problem:
             b_imag = fK_imag
 
             A = jnp.vstack(
-                (jnp.hstack((A_real, -A_imag)), jnp.hstack((A_imag, A_real)))
+                (jnp.hstack((A_real, -A_imag)), jnp.hstack((-A_imag, -A_real)))
             )
-            b = jnp.concatenate((b_real, b_imag))
-            x = jsp.linalg.solve(A, b)
+            b = jnp.concatenate((b_real, -b_imag))
 
-            u = (
-                self.interpolation_value_from_bc
-                + self.interpolation_vector @ x.reshape((-1, 2))
+            x = jsp.linalg.solve(A, b, check_finite=False)
+
+            u = jnp.array(
+                [self.interpolation_value_from_bc, 0.0]
+            ) + self.interpolation_vector @ x.reshape(  # real, imag
+                (-1, 2), order="F"
             )
 
             return u
 
-        return jax.jit(jax.vmap(_solve, in_axes=(0, None),))
+        _get_afc = jax.jit(jax.vmap(_solve, in_axes=(0, None),))
+        
+        if batch_size is None:
+            return _get_afc
 
-    def getMSELossFunction(self, params_to_physical, frequencies, reference_afc):
+        # Workaround to avoid memory error 
+        def _get_afc_batched(fs, params):
+            N_omega = fs.shape[0]
+            if batch_size >= N_omega:
+              return _get_afc(fs, params)
+            n_batches = (N_omega + batch_size - 1)//batch_size
+            afc = _get_afc(fs[:batch_size], params)
+            for i in range(1, n_batches - 1):
+                afc = jnp.vstack((afc, _get_afc(fs[i*batch_size:(i+1)*batch_size], params)))
+            i += 1
+            afc = jnp.vstack((afc, _get_afc(fs[i*batch_size:], params)))
+            return afc
+
+        return _get_afc_batched
+
+    def getSolutionMatrices(self, D, beta):
+        loss_moduli = beta * D
+        e = self.e
+
+        K_real = jnp.einsum(self.Ks, [0, ...], D, [0]) / 2.0 / e
+        K_imag = jnp.einsum(self.Ks, [0, ...], loss_moduli, [0]) / 2.0 / e
+
+        return K_real, K_imag, self.MInertia
+
+    def getMSELossFunction(self, params_to_physical, frequencies, reference_afc, batch_size=None):
         assert frequencies.shape[0] == reference_afc.shape[0]
         assert reference_afc.shape[1] == 2
 
-        afc_function = self.getAFCFunction(params_to_physical)
+        afc_function = self.getAFCFunction(params_to_physical, batch_size)
 
         def MSELoss(params):
             afc = afc_function(frequencies, params)

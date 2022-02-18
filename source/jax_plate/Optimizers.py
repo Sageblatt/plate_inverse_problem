@@ -19,8 +19,6 @@ def get_sd_and_norm(
 
 def solve_trust_region_model(B, g, delta, rtol=1e-6, max_iter=100):
     lams, eigenvectors = np.linalg.eigh(B)
-    print(lams)
-    print(eigenvectors @ g / np.linalg.norm(g))
     sd = jnp.linalg.solve(B, -g)
     pnorm = jnp.linalg.norm(sd)
     if pnorm <= delta:
@@ -71,7 +69,6 @@ def solve_trust_region_model(B, g, delta, rtol=1e-6, max_iter=100):
         predicted_improvement >= 0
     ), "Predicted improvement for quadratic model is negative"
 
-    print(m, k)
     return sd, lam, predicted_improvement
 
 
@@ -168,7 +165,7 @@ def optimize_trust_region(
         x_history.append(x)
         grad_history.append(g)
 
-        print(delta)
+        # print(delta)
 
         if cur_f < 1e-7:
             status = "Converged"
