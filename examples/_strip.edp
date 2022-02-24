@@ -21,7 +21,7 @@ real eps = 1e-8;
 // These parameters control the mesh coarsity
 // ny is the number of mesh nods on the short side
 // nAccel -- on the border of the area occupied by the accelerometer
-int ny = 5;
+int ny = 3;
 int nx = 5*ny;
 int nAccel = 16;
 
@@ -38,7 +38,7 @@ mesh Th = buildmesh(C1(ny) + C2(nx) + C3(ny) + C4(nx) + CAccel(nAccel));
 
 // Source term
 func funcSource = 0.0;
-// Boundary condition u = funcBc on Dirichlet border
+// Boundary condition u = funcBc on Dirichlet border; (3.1.3) in preprint
 func funcBC = 1;
 // Indicator function of the area occupied by the accelerometer (to correct the mass matrix)
 func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - offsetAccelY)^2));
