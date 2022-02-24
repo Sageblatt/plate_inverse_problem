@@ -101,22 +101,28 @@ class Problem:
             """
 
         def _solve(f, params):
+            # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
             e = self.e
+            # params_to_physical is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
+            # theta is the set of parameters; for example see Utils.isotropic_to_full
             D, beta = params_to_physical(params)
             loss_moduli = beta * D
 
             # K_real = \sum K_ij*D_ij/(2.*e)
             # K_imag = \sum K_ij*D_ij/(2.*e)
+            # Ks are matrices from eq (4.1.7)
             K_real = jnp.einsum(self.Ks, [0, ...], D, [0]) / 2.0 / e
             K_imag = jnp.einsum(self.Ks, [0, ...], loss_moduli, [0]) / 2.0 / e
 
             # f_imag = ..
+            # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
             fK_real = jnp.einsum(self.fKs, [0, ...], D, [0]) / 2.0 / e
             fK_imag = jnp.einsum(self.fKs, [0, ...], loss_moduli, [0]) / 2.0 / e
 
             # Formulate system (A_real + i*A_imag)(u_real + i*u_imag) = (b_real + i*b_imag)
             # and create matrix from blocks for real solution
+            # MInertia == rho*(M + 1/3 e^2 L) from
             A_real = -(omega ** 2) * self.MInertia + K_real
             A_imag = K_imag
             b_real = -(omega ** 2) * self.fInertia + fK_real + self.fLoad / 2.0 / e
@@ -127,32 +133,36 @@ class Problem:
             )
             b = jnp.concatenate((b_real, -b_imag))
 
-            x = jsp.linalg.solve(A, b, check_finite=False)
+            u = jsp.linalg.solve(A, b, check_finite=False)
 
-            u = jnp.array(
+            # interpolation_vector == c
+            # interpolation_value_from_bc == c_0 from 4.1.18
+            u_in_test_point = jnp.array(
                 [self.interpolation_value_from_bc, 0.0]
-            ) + self.interpolation_vector @ x.reshape(  # real, imag
+            ) + self.interpolation_vector @ u.reshape(  # real, imag
                 (-1, 2), order="F"
             )
 
             return u
 
         _get_afc = jax.jit(jax.vmap(_solve, in_axes=(0, None),))
-        
+
         if batch_size is None:
             return _get_afc
 
-        # Workaround to avoid memory error 
+        # Workaround to avoid memory error
         def _get_afc_batched(fs, params):
             N_omega = fs.shape[0]
             if batch_size >= N_omega:
-              return _get_afc(fs, params)
-            n_batches = (N_omega + batch_size - 1)//batch_size
+                return _get_afc(fs, params)
+            n_batches = (N_omega + batch_size - 1) // batch_size
             afc = _get_afc(fs[:batch_size], params)
             for i in range(1, n_batches - 1):
-                afc = jnp.vstack((afc, _get_afc(fs[i*batch_size:(i+1)*batch_size], params)))
+                afc = jnp.vstack(
+                    (afc, _get_afc(fs[i * batch_size : (i + 1) * batch_size], params))
+                )
             i += 1
-            afc = jnp.vstack((afc, _get_afc(fs[i*batch_size:], params)))
+            afc = jnp.vstack((afc, _get_afc(fs[i * batch_size :], params)))
             return afc
 
         return _get_afc_batched
@@ -166,7 +176,9 @@ class Problem:
 
         return K_real, K_imag, self.MInertia
 
-    def getMSELossFunction(self, params_to_physical, frequencies, reference_afc, batch_size=None):
+    def getMSELossFunction(
+        self, params_to_physical, frequencies, reference_afc, batch_size=None
+    ):
         assert frequencies.shape[0] == reference_afc.shape[0]
         assert reference_afc.shape[1] == 2
 
