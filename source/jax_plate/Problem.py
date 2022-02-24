@@ -143,7 +143,7 @@ class Problem:
                 (-1, 2), order="F"
             )
 
-            return u
+            return u_in_test_point
 
         _get_afc = jax.jit(jax.vmap(_solve, in_axes=(0, None),))
 
