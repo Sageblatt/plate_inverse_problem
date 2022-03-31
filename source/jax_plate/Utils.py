@@ -17,6 +17,22 @@ def isotropic_to_full(isotropic_params):
 
     return Ds, betas
 
+def orthotropic(orthotropic_params):
+
+    D_11 = orthotropic_params[0] # D_11 = E_1 h**3/12(1 - nu_12*nu_21)
+    nu_12 = orthotropic_params[1]
+    E_ratio = orthotropic_params[2] # E1/E2
+    D_66 = orthotropic_params[3] # D_66 = G_12*h**3/12
+    beta = orthotropic_params[4] # loss factor
+
+    nu_21 = E_ratio*nu_12
+    D_12 = nu_21*D_11
+    D_22 = D_11/E_ratio
+
+    Ds = jnp.array([D_11, D_12, 0.0, D_22, 0.0, D_66])
+    betas = jnp.full_like(Ds, beta)
+
+    return Ds, betas
 
 def plot_afc_radial(freqs, afc, fig, axs, **line_kwargs):
 

@@ -102,7 +102,7 @@ def optimize_trust_region(
     delta=None,
     eta=0.15,
     method="newt",
-    stall_fraction=0.15,
+    steps_to_stall=10
 ):
     if delta is None:
         delta = delta_max / 10.0
@@ -125,7 +125,6 @@ def optimize_trust_region(
 
     status = "Running"
 
-    steps_to_stall = int(N_steps * stall_fraction)
     steps_without_update = 0
 
     x = x_0
@@ -148,10 +147,9 @@ def optimize_trust_region(
 
         if rel_improvement < 1.0 / 4.0:
             delta /= 4.0
-        else:
-            if rel_improvement >= 3.0 / 4.0 and lam > 0.0:
-                # lam > 0 signals that we iterated in solve_trust_region_model and already found |p| ~ delta
-                delta = jnp.minimum(2.0 * delta, delta_max)
+        elif rel_improvement >= 3.0 / 4.0 and lam > 0.0:
+            # lam > 0 signals that we iterated in solve_trust_region_model and already found |p| ~ delta
+            delta = jnp.minimum(2.0 * delta, delta_max)
 
         if rel_improvement >= eta:
             x += sd
@@ -165,15 +163,12 @@ def optimize_trust_region(
         x_history.append(x)
         grad_history.append(g)
 
-        # print(delta)
-
-        if cur_f < 1e-7:
+        if cur_f < 1e-16:
             status = "Converged"
             break
-        elif steps_without_update >= steps_to_stall:
+        if steps_without_update >= steps_to_stall:
             status = "Stalled"
             break
-
     return trOptResult(x, cur_f, f_history, x_history, grad_history, k, status)
 
 
