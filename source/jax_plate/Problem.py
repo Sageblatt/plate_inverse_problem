@@ -89,7 +89,7 @@ class Problem:
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
 
-    def getAFCFunction(self, params_to_physical, batch_size=None):
+    def getAFCFunction(self, params_frequency_dependent, batch_size=None):
         """Creates function to evaluate AFC 
             :param params_to_physical: Function that converts chosen model parameters to the physical parameters of the model,
                 D_ij storage modulus [Pa], beta_ij loss factor [1], ij in [11, 12, 16, 22, 26, 66], in total 12 parameters.
@@ -106,7 +106,7 @@ class Problem:
             e = self.e
             # params_to_physical is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
             # theta is the set of parameters; for example see Utils.isotropic_to_full
-            D, beta = params_to_physical(params)
+            D, beta = params_frequency_dependent(params, omega)
             loss_moduli = beta * D
 
             # K_real = \sum K_ij*D_ij/(2.*e)
@@ -189,3 +189,32 @@ class Problem:
             return jnp.mean((afc - reference_afc) ** 2)
 
         return MSELoss
+
+    def getRMSELossFunction(
+        self, params_to_physical, frequencies, reference_afc, batch_size=None
+    ):
+        assert frequencies.shape[0] == reference_afc.shape[0]
+        assert reference_afc.shape[1] == 2
+
+        afc_function = self.getAFCFunction(params_to_physical, batch_size)
+
+        def RMSELoss(params):
+            afc = afc_function(frequencies, params)
+            return jnp.mean(((afc - reference_afc) / reference_afc) ** 2)
+
+        return RMSELoss
+
+    # def getLossAndDerivatives(
+    #    self, params_to_physical, frequencies, reference_afc, batch_size=None
+    # ):
+    #    _loss = self.getMSELossFunction(params_to_physical, frequencies, reference_afc)
+    #    _grad = jax.grad(_loss)
+    #    _hess = jax.hessian(_loss)
+
+    #    if batch_size is None:
+    #        return _loss, _grad, _hess
+
+    #    N_omega = frequencies.shape[0]
+
+    #    def loss_batched(params):
+    #        loss = 0.

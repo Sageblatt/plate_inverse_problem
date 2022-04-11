@@ -1,43 +1,10 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import jax
-import jax.numpy as jnp
-
-MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
-
-# TODO check if it is possible in jax to use LA and grad on dictionary (google pyTree)
-def isotropic_to_full(isotropic_params):
-
-    D = isotropic_params[0]
-    nu = isotropic_params[1]
-    beta = isotropic_params[2]
-
-    Ds = jnp.array([D, nu * D, 0.0, D, 0.0, D * (1.0 - nu)])
-    betas = jnp.full_like(Ds, beta)
-
-    return Ds, betas
-
-def orthotropic(orthotropic_params):
-
-    D_11 = orthotropic_params[0] # D_11 = E_1 h**3/12(1 - nu_12*nu_21)
-    nu_12 = orthotropic_params[1]
-    E_ratio = orthotropic_params[2] # E1/E2
-    D_66 = orthotropic_params[3] # D_66 = G_12*h**3/12
-    beta = orthotropic_params[4] # loss factor
-
-    nu_21 = E_ratio*nu_12
-    D_12 = nu_21*D_11
-    D_22 = D_11/E_ratio
-
-    Ds = jnp.array([D_11, D_12, 0.0, D_22, 0.0, D_66])
-    betas = jnp.full_like(Ds, beta)
-
-    return Ds, betas
 
 def plot_afc_radial(freqs, afc, fig, axs, **line_kwargs):
 
-    afc_module = jnp.linalg.norm(afc, axis=1, ord=2)
-    afc_phase_shift = jnp.arctan2(afc[:, 0], afc[:, 1]) / jnp.pi
+    afc_module = np.linalg.norm(afc, axis=1, ord=2)
+    afc_phase_shift = np.arctan2(afc[:, 0], afc[:, 1]) / np.pi
 
     axs[0].set_yscale("log")
     axs[0].plot(freqs, afc_module, **line_kwargs)

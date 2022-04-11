@@ -1,7 +1,7 @@
 import numpy as np
 import pyFreeFem as pyff
 
-from .Utils import MODULI_INDICES
+from .ParamTransforms import MODULI_INDICES
 
 # TODO make it local
 tgv = 1e30
