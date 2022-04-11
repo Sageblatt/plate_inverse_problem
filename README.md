@@ -10,7 +10,7 @@ The code for solution of the direct problem and computation of the derivatives i
 Implementation of several first and second order optimization methods is also provided.
 
 ***In future***, I plan to expand the code to:
-- Solve the inverse problem with frequency-dependant parameters
+- Solve the inverse problem with frequency-dependent parameters
 - Solve the inverse problem with time-domain data
 - Solve the optimal design problem
 
