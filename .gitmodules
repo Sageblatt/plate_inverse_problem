@@ -1,0 +1,3 @@
+[submodule "source/pyFreeFem"]
+	path = source/pyFreeFem
+	url = https://github.com/viviaxenov/pyFreeFem
