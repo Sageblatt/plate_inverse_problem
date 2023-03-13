@@ -12,4 +12,4 @@ Implementation of several first and second order optimization methods is also pr
 
 1. Install [FreeFEM++](https://freefem.org/)
 2. Install [Jax](https://github.com/google/jax)
-3. `git clone --recurse-submodules https://github.com/viviaxenov/plate_inverse_problem.git`
+3. `git clone --recurse-submodules https://github.com/Sageblatt/plate_inverse_problem.git`
