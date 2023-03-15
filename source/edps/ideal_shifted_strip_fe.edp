@@ -4,11 +4,11 @@ verbosity = 0;
 load "Morley"
 load "iovtk"
 
-real rAccel = 4e-3;
-real Lx = 100*1e-3;
+real rAccel = 3.8e-3;
+real Lx = 99.9*1e-3;
 real Ly = 20*1e-3;
-real offsetAccelX = 5e-3;
-real offsetAccelY = 5*1e-3;
+real offsetAccelX = rAccel;
+real offsetAccelY = Ly/2 - rAccel;
 // Test point for AFC measurment
 real xtest = offsetAccelX;
 real ytest = offsetAccelY;
@@ -16,17 +16,19 @@ real eps = 1e-8;
 
 int ny = 3;
 int nx = 5*ny;
-int nAccel = 10;
+int nAccel = 16;
 
-border C1(t=0., 1){x=0; y=Ly/2. - t*Ly; label=0;}
+border C1(t=0., 1){x=0; y=Ly/2 - t*rAccel; label=0;}
+border C11(t=0., 1){x=0; y=Ly/2 - rAccel - t*(Ly-rAccel); label=0;}
 border C2(t=0., 1){x=Lx*t; y=-Ly/2.; label=0;}
 border C3(t=0., 1){x=Lx; y=-Ly/2. + t*Ly; label=1;}
-border C4(t=0., 1){x=(1-t)*Lx; y=Ly/2.; label=0;}
+border C4(t=0., 1){x=Lx - t*(Lx-rAccel); y=Ly/2.; label=0;}
+border C44(t=0., 1){x=(1-t)*rAccel; y=Ly/2.; label=0;}
 
 border CAccel(t=0., 2*pi){x=offsetAccelX + rAccel*cos(t); y=offsetAccelY + rAccel*sin(t); label=0;}
 
-mesh Th = buildmesh(C1(ny) + C2(nx) + C3(ny) + C4(nx) + CAccel(nAccel));
-savevtk("strip_mesh.vtu", Th);
+mesh Th = buildmesh(C1(3) + C11(ny-1) + C2(nx) + C3(ny) + C4(nx-1) + C44(3) + CAccel(nAccel));
+//savevtk("ideal_strip_mesh_shifted_fe.vtu", Th);
 //mesh Th = buildmesh(C1(ny) + C2(nx) + C3(ny) + C4(nx)  );
 
 // Source term

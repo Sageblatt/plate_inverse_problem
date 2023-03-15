@@ -4,40 +4,36 @@ verbosity = 0;
 load "Morley"
 load "iovtk"
 
-real Lx = 100*1e-3; // Lenghts of the long and short sides of the plate, [m]
+real rAccel = 3.8e-3;
+real Lx = 99.6*1e-3;
 real Ly = 20*1e-3;
-real rAccel = 4e-3; // Radius of the accelerometer [m]
-real offsetAccelX = 5e-3; // Positions of the center of the accelerometer
-real offsetAccelY = 0.;
+real offsetAccelX = 4.0e-3;
+real offsetAccelY = 5.5*1e-3;
 // Test point for AFC measurment
 real xtest = offsetAccelX;
 real ytest = offsetAccelY;
 real eps = 1e-8;
 
-// These parameters control the mesh coarsity
-// ny is the number of mesh nods on the short side
-// nAccel -- on the border of the area occupied by the accelerometer
-int ny = 3;
+int ny = 4;
 int nx = 5*ny;
-int nAccel = 16;
+int nAccel = 11;
 
 border C1(t=0., 1){x=0; y=Ly/2. - t*Ly; label=0;}
 border C2(t=0., 1){x=Lx*t; y=-Ly/2.; label=0;}
-border C3(t=0., 1){x=Lx; y=-Ly/2. + t*Ly; label=1;} // This side (one of the short sides) is clamped (u = du/dn = 0)
+border C3(t=0., 1){x=Lx; y=-Ly/2. + t*Ly; label=1;}
 border C4(t=0., 1){x=(1-t)*Lx; y=Ly/2.; label=0;}
 
-// boundary of the area occupied by the accelerometer
-//  
-border CAccel(t=0., 2*pi){x=offsetAccelX + rAccel*cos(t); y=offsetAccelY + rAccel*sin(t); label=0;} 
+border CAccel(t=0., 2*pi){x=offsetAccelX + rAccel*cos(t); y=offsetAccelY + rAccel*sin(t); label=0;}
 
 mesh Th = buildmesh(C1(ny) + C2(nx) + C3(ny) + C4(nx) + CAccel(nAccel));
-savevtk("mesh.vtu", Th);
+//savevtk("real_strip_mesh_shifted_ti.vtu", Th);
+//mesh Th = buildmesh(C1(ny) + C2(nx) + C3(ny) + C4(nx)  );
 
 // Source term
 func funcSource = 0.0;
 // Boundary condition u = funcBc on Dirichlet border
 func funcBC = 1;
-// Indicator function of the area occupied by the accelerometer (to correct the mass matrix)
+// Indicator of the area occupied by the accelerometer (to correct the mass matrix)
 func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - offsetAccelY)^2));
 
 fespace Vh(Th, P2Morley);

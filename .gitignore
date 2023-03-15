@@ -2,3 +2,7 @@
 *.vtk
 tests/
 __pycache__
+
+.idea/
+
+source/misc/
