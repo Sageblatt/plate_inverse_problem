@@ -1,10 +1,49 @@
-import jax
 import jax.numpy as jnp
+import numpy as np
+from typing import Callable
 
 MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
 
-def isotropic_to_full(isotropic_params, *args):
+class FixedParameterFunction:
+    """
+        Wrapper around existing parameter transform function,
+        which fixes one of several parameters to constant value.
 
+        :param function: function to be modified
+        :param param_size: Overall amount of parameters of function
+        :param fixed_indexes: fixed parameters' indexes, starting from 0
+        :param fixed_values: values to be fixed
+    """
+    def __init__(self, function: Callable,
+                 param_size: int,
+                 fixed_indexes: int | tuple,
+                 fixed_values: float | tuple):
+        self.func = function
+        self.array = np.zeros(param_size)
+        self.free_idx = [i for i in range(param_size)]
+
+        if isinstance(fixed_indexes, int) or isinstance(fixed_values, float):
+            assert isinstance(fixed_indexes, int)
+            assert isinstance(fixed_values, float)
+            self.array[fixed_indexes] = fixed_values
+            self.free_idx.remove(fixed_indexes)
+        else:
+            assert len(fixed_indexes) == len(fixed_values)
+            for i, idx in enumerate(fixed_indexes):
+                self.array[idx] = fixed_values[i]
+                self.free_idx.remove(idx)
+
+        self.free_idx = jnp.array(self.free_idx)
+
+    def __call__(self, params, *args):
+        modified_params = jnp.array(self.array)
+        modified_params = modified_params.at[self.free_idx].set(params)
+        return self.func(modified_params, *args)
+
+def isotropic(isotropic_params, *args):
+    """
+        Converts scalar parameters [D, nu, beta] to tensor D_ij components.
+    """
     D = isotropic_params[0]
     nu = isotropic_params[1]
     beta = isotropic_params[2]

@@ -1,9 +1,7 @@
-import numpy as np
-import scipy as sp
-
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
+from typing import Callable
 
 from jax.config import config
 
@@ -24,13 +22,13 @@ class Problem:
     :type thickness: double
     :param density: specimen density [kg/m^3]
     :type thickness: double
-        """
+    """
 
     def __init__(
         self,
         path_to_edp: str,
-        thickness: np.float64,
-        density: np.float64,
+        thickness: np.float64 | float,
+        density: np.float64 | float,
         accelerometer_param: dict = None,
     ):
         """Constructor method"""
@@ -49,11 +47,11 @@ class Problem:
         self.fL = jnp.array(processed_ff_output["fL"])
 
         # Correction of the inertia matrices by the mass of the accelerometer
-        # TODO get rid of copypasta programming
         MCorrection = jnp.array(processed_ff_output["MCorrection"])
         fMCorrection = jnp.array(processed_ff_output["fMCorrection"])
         LCorrection = jnp.array(processed_ff_output["LCorrection"])
         fLCorrection = jnp.array(processed_ff_output["fLCorrection"])
+
         # TODO load can be not in phase with the BC vibration
         # and both BC and load may have different phases in points
         # so both of them have to be complex in general
@@ -89,7 +87,7 @@ class Problem:
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
 
-    def getAFCFunction(self, params_frequency_dependent, batch_size=None):
+    def getFRFunction(self, params_to_physical, batch_size=None):
         """Creates function to evaluate AFC 
             :param params_to_physical: Function that converts chosen model parameters to the physical parameters of the model,
                 D_ij storage modulus [Pa], beta_ij loss factor [1], ij in [11, 12, 16, 22, 26, 66], in total 12 parameters.
@@ -106,7 +104,7 @@ class Problem:
             e = self.e
             # params_to_physical is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
             # theta is the set of parameters; for example see Utils.isotropic_to_full
-            D, beta = params_frequency_dependent(params, omega)
+            D, beta = params_to_physical(params, omega)
             loss_moduli = beta * D
 
             # K_real = \sum K_ij*D_ij/(2.*e)
@@ -176,33 +174,39 @@ class Problem:
 
         return K_real, K_imag, self.MInertia
 
-    def getMSELossFunction(
-        self, params_to_physical, frequencies, reference_afc, batch_size=None
-    ):
-        assert frequencies.shape[0] == reference_afc.shape[0]
-        assert reference_afc.shape[1] == 2
+    def getLossFunction(
+        self,
+        params_to_physical: Callable,
+        frequencies: jax.Array,
+        reference_fr: jax.Array,
+        func_type: str, # Available options are: MSE, RMSE, MSE_AFC
+        batch_size: int = None
+    ) -> Callable:
+        assert frequencies.shape[0] == reference_fr.shape[0]
+        assert reference_fr.shape[1] == 2
 
-        afc_function = self.getAFCFunction(params_to_physical, batch_size)
+        fr_function = self.getFRFunction(params_to_physical, batch_size)
 
-        def MSELoss(params):
-            afc = afc_function(frequencies, params)
-            return jnp.mean((afc - reference_afc) ** 2)
+        if func_type == "MSE":
+            def MSELoss(params):
+               fr = fr_function(frequencies, params)
+               return jnp.mean((fr - reference_fr) ** 2)
+            return MSELoss
 
-        return MSELoss
+        elif func_type == "RMSE":
+            def RMSELoss(params):
+                fr = fr_function(frequencies, params)
+                return jnp.mean(((fr - reference_fr) / reference_fr) ** 2)
+            return RMSELoss
 
-    def getRMSELossFunction(
-        self, params_to_physical, frequencies, reference_afc, batch_size=None
-    ):
-        assert frequencies.shape[0] == reference_afc.shape[0]
-        assert reference_afc.shape[1] == 2
-
-        afc_function = self.getAFCFunction(params_to_physical, batch_size)
-
-        def RMSELoss(params):
-            afc = afc_function(frequencies, params)
-            return jnp.mean(((afc - reference_afc) / reference_afc) ** 2)
-
-        return RMSELoss
+        elif func_type == "MSE_AFC":
+            def MSE_AFCLoss(params):
+                fr = fr_function(frequencies, params)
+                return jnp.mean((jnp.linalg.norm(fr, axis=1, ord=2) -
+                                 jnp.linalg.norm(reference_fr, axis=1, ord=2)) ** 2)
+            return MSE_AFCLoss
+        else:
+            raise ValueError(f'Function type "{func_type}" is not supported!')
 
     # def getLossAndDerivatives(
     #    self, params_to_physical, frequencies, reference_afc, batch_size=None
