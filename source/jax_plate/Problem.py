@@ -205,6 +205,13 @@ class Problem:
                 return jnp.mean((jnp.linalg.norm(fr, axis=1, ord=2) -
                                  jnp.linalg.norm(reference_fr, axis=1, ord=2)) ** 2)
             return MSE_AFCLoss
+        
+        elif func_type == "MSE_LOG_AFC":
+            def MSE_LOG_AFCLoss(params):
+                fr = fr_function(frequencies, params)
+                return jnp.mean((jnp.log(jnp.linalg.norm(fr, axis=1, ord=2)) -
+                                 jnp.log(jnp.linalg.norm(reference_fr, axis=1, ord=2))) ** 2)
+            return MSE_LOG_AFCLoss
         else:
             raise ValueError(f'Function type "{func_type}" is not supported!')
 
