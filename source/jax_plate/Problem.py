@@ -11,19 +11,10 @@ from .pyFFInterface import *
 
 
 class Problem:
-    """Defines the geometry and those of the parameters that are known before the experiment. 
-        Stores FEM matrices on GPU, produces differentiable jax functions.
-
-    :param path_to_edp: Path to .edp file which is used to interact with FreeFem++. 
-        As for now, the geometry, mesh and  test point are also defined there. 
-        In future, we'll fix one certain .edp file and change this arg to something line <<path_to_geometry>>
-    :type path_to_edp: str
-    :param thickness: specimen thickness [m]
-    :type thickness: double
-    :param density: specimen density [kg/m^3]
-    :type thickness: double
     """
-
+    Defines the geometry and those of the parameters that are known before the
+    experiment. Stores FEM matrices on GPU, produces differentiable jax functions.
+    """
     def __init__(
         self,
         path_to_edp: str,
@@ -31,7 +22,24 @@ class Problem:
         density: np.float64 | float,
         accelerometer_param: dict = None,
     ):
-        """Constructor method"""
+        """
+        Constructor method.
+        
+        Parameters
+        ----------
+        path_to_edp : str
+            Path to .edp file which is used to interact with FreeFem++. 
+            As for now, the geometry, mesh and  test point are also defined there. 
+            In future, we'll fix one certain .edp file and change this arg to 
+            something like <<path_to_geometry>>.
+        thickness : double
+            Specimen's thickness [m].
+        density : double
+            Specimen's density [kg/m^3].
+        accelerometer_param : dict
+            Dictionary with `radius` and `mass` keys with corresponding double
+            values.
+        """
         self.h = thickness
         self.e = thickness / 2.0
         self.rho = density
@@ -88,15 +96,28 @@ class Problem:
         self.constrained_idx = processed_ff_output["constrained_idx"]
 
     def getFRFunction(self, params_to_physical, batch_size=None):
-        """Creates function to evaluate AFC 
-            :param params_to_physical: Function that converts chosen model parameters to the physical parameters of the model,
-                D_ij storage modulus [Pa], beta_ij loss factor [1], ij in [11, 12, 16, 22, 26, 66], in total 12 parameters.
-                Implemented to handle isotropic/orthotropic/general anisotropic elasticity; scaling, shifting of parameters for better minimization, etc.
-            :type params_to_physical: callable
-            :return: getAFC(frecuencies, params)  functions that takes array of frequencies w[nW] [Hz] and the parameters theta 
-                and returns the afc[nW, 2] array, where afc[0, :] is the real and afc[1, :] the imaginary part of complex amplitude in test point
-            :rtype: callable
-            """
+        """
+        Creates a function to evaluate AFC.
+        
+        Parameters
+        ----------
+        params_to_physical : Callable
+            Function that converts chosen model parameters to the physical 
+            parameters of the model, D_ij storage modulus [Pa], beta_ij loss 
+            factor [1], ij in [11, 12, 16, 22, 26, 66], in total 12 parameters.
+            Implemented to handle isotropic/orthotropic/general anisotropic 
+            elasticity; scaling, shifting of parameters for better minimization, etc..
+        batch_size : int, optional
+            If present, optimization will use batches to avoid memory error.
+            
+        Returns
+        -------
+        callable
+            Function that takes array of frequencies `omega` [Hz] and the 
+            parameters `theta` and returns the FR array of complex amplitude in
+            test point.
+            
+        """
 
         def _solve(f, params):
             # solve for one frequency f (in [Hz])
@@ -135,13 +156,12 @@ class Problem:
 
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18
-            u_in_test_point = jnp.array(
-                [self.interpolation_value_from_bc, 0.0]
-            ) + self.interpolation_vector @ u.reshape(  # real, imag
+            u_in_test_point = jnp.array([self.interpolation_value_from_bc, 0.0]) +\
+            self.interpolation_vector @ u.reshape(  # real, imag
                 (-1, 2), order="F"
             )
 
-            return u_in_test_point
+            return u_in_test_point[0] + 1j * u_in_test_point[1]
 
         _get_afc = jax.jit(jax.vmap(_solve, in_axes=(0, None),))
 
@@ -183,35 +203,38 @@ class Problem:
         batch_size: int = None
     ) -> Callable:
         assert frequencies.shape[0] == reference_fr.shape[0]
-        assert reference_fr.shape[1] == 2
 
         fr_function = self.getFRFunction(params_to_physical, batch_size)
 
         if func_type == "MSE":
             def MSELoss(params):
-               fr = fr_function(frequencies, params)
-               return jnp.mean((fr - reference_fr) ** 2)
+                fr = fr_function(frequencies, params)
+                return jnp.mean(jnp.abs(fr - reference_fr) ** 2)
+           
             return MSELoss
 
         elif func_type == "RMSE":
             def RMSELoss(params):
                 fr = fr_function(frequencies, params)
-                return jnp.mean(((fr - reference_fr) / reference_fr) ** 2)
+                return jnp.mean(jnp.abs((fr - reference_fr) / reference_fr) ** 2)
+            
             return RMSELoss
 
         elif func_type == "MSE_AFC":
             def MSE_AFCLoss(params):
                 fr = fr_function(frequencies, params)
-                return jnp.mean((jnp.linalg.norm(fr, axis=1, ord=2) -
-                                 jnp.linalg.norm(reference_fr, axis=1, ord=2)) ** 2)
+                return jnp.mean((jnp.abs(fr) - jnp.abs(reference_fr)) ** 2)
+            
             return MSE_AFCLoss
         
         elif func_type == "MSE_LOG_AFC":
             def MSE_LOG_AFCLoss(params):
                 fr = fr_function(frequencies, params)
-                return jnp.mean((jnp.log(jnp.linalg.norm(fr, axis=1, ord=2)) -
-                                 jnp.log(jnp.linalg.norm(reference_fr, axis=1, ord=2))) ** 2)
+                return jnp.mean((jnp.log(jnp.abs(fr)) -
+                                 jnp.log(jnp.abs(reference_fr))) ** 2)
+            
             return MSE_LOG_AFCLoss
+        
         else:
             raise ValueError(f'Function type "{func_type}" is not supported!')
 

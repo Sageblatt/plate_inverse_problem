@@ -5,8 +5,8 @@ def plot_fr_radial(freqs, fr, fig, axs, **line_kwargs):
     """Plots given frequency response on given frequency range as two subplots:
         AFC and PFC.
     """
-    afc_module = np.linalg.norm(fr, axis=1, ord=2)
-    afc_phase_shift = np.arctan2(fr[:, 0], fr[:, 1]) / np.pi
+    afc_module = np.abs(fr)
+    afc_phase_shift = np.arctan2(np.real(fr), np.imag(fr)) / np.pi
 
     axs[0].set_yscale("log")
     axs[0].plot(freqs, afc_module, **line_kwargs)
@@ -26,12 +26,12 @@ def plot_fr_complex(freqs, fr, fig, axs, **line_kwargs):
     """Plots given frequency response on given frequency range as two subplots:
             Real and Imaginary parts of FR.
         """
-    axs[0].plot(freqs, fr[:, 0], **line_kwargs)
+    axs[0].plot(freqs, np.real(fr), **line_kwargs)
     axs[0].set_title(r"$\Re(u)$")
     axs[0].set_xlabel("$f,\\ Hz$")
     axs[0].grid(True)
 
-    axs[1].plot(freqs, fr[:, 1], **line_kwargs)
+    axs[1].plot(freqs, np.imag(fr), **line_kwargs)
     axs[1].set_title(r"$\Im(u)$")
     axs[1].set_xlabel("$f,\\ Hz$")
     axs[1].grid(True)
