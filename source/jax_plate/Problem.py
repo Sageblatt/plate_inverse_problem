@@ -1,6 +1,7 @@
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
+import numpy as np
 from typing import Callable
 
 from jax.config import config

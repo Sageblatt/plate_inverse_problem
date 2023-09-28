@@ -4,20 +4,34 @@ from typing import Callable
 
 MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
 
+
 class FixedParameterFunction:
     """
         Wrapper around existing parameter transform function,
         which fixes one of several parameters to constant value.
-
-        :param function: function to be modified
-        :param param_size: Overall amount of parameters of function
-        :param fixed_indexes: fixed parameters' indexes, starting from 0
-        :param fixed_values: values to be fixed
     """
     def __init__(self, function: Callable,
                  param_size: int,
                  fixed_indexes: int | tuple,
                  fixed_values: float | tuple):
+        """
+        Constructor method.
+
+        Parameters
+        ----------
+        function : Callable
+            Function to be modified.
+        param_size : int
+            Overall amount of parameters of function.
+        fixed_indexes : int | tuple
+            Fixed parameters' indexes, starting from 0.
+        fixed_values : float | tuple
+            Values to be fixed.
+
+        Returns
+        -------
+        None
+        """
         self.func = function
         self.array = np.zeros(param_size)
         self.free_idx = [i for i in range(param_size)]
