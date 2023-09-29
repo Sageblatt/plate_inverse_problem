@@ -1,3 +1,4 @@
+import os
 import numpy as np
 import matplotlib.pyplot as plt
 
@@ -56,3 +57,7 @@ def plot_fr(freqs, fr, fig=None, kind="Radial", **line_kwargs):
             return plot_fr_radial(freqs, fr, fig, axs, **line_kwargs)
         else:
             return plot_fr_complex(freqs, fr, fig, axs, **line_kwargs)
+
+def get_jax_plate_dir():
+    """Returns an absolute path to a directory where jax_plate sources are located."""
+    return os.path.abspath(os.path.dirname(__file__))
