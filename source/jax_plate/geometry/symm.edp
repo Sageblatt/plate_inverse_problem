@@ -1,0 +1,62 @@
+// Dirichlet boundary should be labelled 1
+verbosity = 0;
+
+load "Morley"
+load "iovtk"
+
+real Lx = 100*1e-3; // Lenghts of the long and short sides of the plate, [m]
+real Ly = 20*1e-3;
+real rAccel = 4e-3; // Radius of the accelerometer [m]
+real offsetAccelX = 5e-3; // Positions of the center of the accelerometer
+// Test point for AFC measurment
+real xtest = offsetAccelX;
+real ytest = 0;
+real eps = 1e-8;
+
+// These parameters control the mesh coarsity
+// ny is the number of mesh nods on the short side
+// nAccel -- on the border of the area occupied by the accelerometer
+int ny = 3;
+int nx = 5*ny;
+int nAccel = 16;
+
+border C1(t=0., 1){x=0; y=Ly/2. - t*Ly; label=0;}
+border C2(t=0., 1){x=Lx*t; y=-Ly/2.; label=0;}
+border C3(t=0., 1){x=Lx; y=-Ly/2. + t*Ly; label=1;} // This side (one of the short sides) is clamped (u = du/dn = 0)
+border C4(t=0., 1){x=(1-t)*Lx; y=Ly/2.; label=0;}
+
+// boundary of the area occupied by the accelerometer
+//
+border CAccel(t=0., 2*pi){x=offsetAccelX + rAccel*cos(t); y=0 + rAccel*sin(t); label=0;}
+
+mesh Th = buildmesh(C1(ny) + C2(nx) + C3(ny) + C4(nx) + CAccel(nAccel));
+//savevtk("mesh.vtu", Th);
+
+// Source term
+func funcSource = 0.0;
+// Boundary condition u = funcBc on Dirichlet border
+func funcBC = 1;
+// Indicator function of the area occupied by the accelerometer (to correct the mass matrix)
+func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - 0)^2));
+
+fespace Vh(Th, P2Morley);
+Vh [u, ux, uy], [v, vx, vy];
+
+varf Load([u, ux, uy], [v, vx, vy]) = int2d(Th)(funcSource*v) + on(1, u=0, ux=0, uy=0);
+real[int] vLoad = Load(0, Vh);
+
+varf BC([u, ux, uy], [v, vx, vy]) = on(1, u=funcBC, ux=0, uy=0);
+real[int] vBC = BC(0, Vh, tgv=-1);
+
+// DIRTY HACK: i create a small triangle close to rtest
+// so that even if I fuck up with indices, the difference will not be too large
+real[int] xxtest = [xtest, xtest + 1e-8, xtest + 1e-8];
+real[int] yytest = [ytest, ytest - 1e-8, ytest + 1e-8];
+// Create a surrogate mesh to produce interpolation matrix
+mesh testTh = triangulate(xxtest, yytest);
+// Create a surrogate FE space with P1 basis functions on testTh
+// As P1 basis functions are standard triangular <<caps>> which are equal to 1
+// in nodes, the DOF in this basis are exactly u(x_i, y_i)
+fespace testVh(testTh, P1);
+int[int] u2vc = [0];
+matrix MinterpC = interpolate(testVh, Vh, U2Vc=u2vc);
