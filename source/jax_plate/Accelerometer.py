@@ -10,7 +10,7 @@ class AccelerometerParams:
     """
     mass: float
     radius: float
-    height: float
+    height: float = None
 
 
 class Accelerometer:

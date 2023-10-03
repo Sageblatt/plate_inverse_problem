@@ -2,13 +2,21 @@ import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 import numpy as np
+
 from typing import Callable
 
-from jax.config import config
+import os
+import json
 
+from .Accelerometer import Accelerometer, AccelerometerParams
+from .Material import Material, MaterialParams
+from .Geometry import Geometry, GeometryParams
+
+from .pyFFInterface import getOutput, evaluateMatrixAndRHS, processFFOutput
+
+from jax.config import config
 config.update("jax_enable_x64", True)
 
-from .pyFFInterface import *
 
 
 class Problem:
@@ -16,36 +24,166 @@ class Problem:
     Defines the geometry and those of the parameters that are known before the
     experiment. Stores FEM matrices on GPU, produces differentiable jax functions.
     """
-    def __init__(
-        self,
-        path_to_edp: str,
-        thickness: np.float64 | float,
-        density: np.float64 | float,
-        accelerometer_param: dict = None,
-    ):
+    def __init__(self,
+                 setup_path_or_geometry: str | os.PathLike | Geometry,
+                 material: Material = None,
+                 accel: Accelerometer = None,
+                 ref_fr: tuple[np.ndarray, np.ndarray] = None): # TODO: independent from geometry import from setup
         """
         Constructor method.
-        
+
         Parameters
         ----------
-        path_to_edp : str
-            Path to .edp file which is used to interact with FreeFem++. 
-            As for now, the geometry, mesh and  test point are also defined there. 
-            In future, we'll fix one certain .edp file and change this arg to 
-            something like <<path_to_geometry>>.
-        thickness : double
-            Specimen's thickness [m].
-        density : double
-            Specimen's density [kg/m^3].
-        accelerometer_param : dict
-            Dictionary with `radius` and `mass` keys with corresponding double
-            values.
-        """
-        self.h = thickness
-        self.e = thickness / 2.0
-        self.rho = density
+        setup_path_or_geometry : str | os.PathLike | Geometry
+            A path to a setup folder or a Geometry object.
+            Setup folder should contain setup.json file, that contains 'geometry',
+            'accelerometer' and 'material' entities with corresponding parameters,
+            so the Geometry, Accelerometer and Material object can be created.
+            If this argument is the Geometry object, then `material` and `accel`
+            arguments become mandatory.
+        material : Material, optional
+            Material object, has to contain `density`, `atype`, `transform`
+            attributes. The default is None.
+        accel : Accelerometer, optional
+            Accelerometer object, has to contain `mass` and `radius` attributes.
+            The default is None.
+        ref_fr : tuple[np.ndarray, np.ndarray], optional
+            Reference frequency response obtained from experiment,
+            first element is an array of frequencies, second one is an array of
+            complex amplitudes. The default is None.
 
-        processed_ff_output = processFFOutput(getOutput(path_to_edp))
+        Returns
+        -------
+        None
+
+        """
+
+        if isinstance(setup_path_or_geometry, str | os.PathLike):
+            if not os.path.exists(setup_path_or_geometry):
+                raise ValueError(f'Path of the setup {setup_path_or_geometry} '
+                                 'does not exist.')
+
+            elif not os.path.isdir(setup_path_or_geometry):
+                raise ValueError(f'Selected path {setup_path_or_geometry} is '
+                                 'not a directory.')
+
+            setup_fpath = os.path.join(setup_path_or_geometry, 'setup.json')
+
+            if not os.path.exists(setup_fpath):
+                raise FileNotFoundError(f'`setup.json` file was not found in '
+                                        'setup directory '
+                                        f'{setup_path_or_geometry}.')
+
+            with open(setup_fpath, 'r') as file:
+                setup_params = json.load(file)
+
+            try:
+                param_dict = {'accelerometer': (Accelerometer, AccelerometerParams),
+                              'material': (Material, MaterialParams)}
+
+                for key in param_dict:
+                    if isinstance(setup_params[key], str):
+                        setattr(self, key,
+                                param_dict[key][0](setup_params[key]))
+
+                    elif isinstance(setup_params[key], dict):
+                        setattr(self, key,
+                                param_dict[key][0](param_dict[key][1](**setup_params[key])))
+
+                    else:
+                        raise TypeError(f'In file {setup_fpath} key "{key}" '
+                                        'should have a value with type `str` or'
+                                        ' `dict`.')
+
+                if 'template' in setup_params['geometry']:
+                    templ = setup_params['geometry']['template']
+                    del setup_params['geometry']['template']
+
+                    self.geometry = Geometry(templ,
+                                             accelerometer=self.accelerometer,
+                                             params=GeometryParams(**setup_params['geometry']))
+
+                elif 'edp' in setup_params['geometry']:
+                    edp_file = setup_params['geometry']['edp']
+                    del setup_params['geometry']['edp']
+
+                    if 'length' in setup_params['geometry']:
+                        self.geometry = Geometry(edp_file,
+                                                 accelerometer=self.accelerometer,
+                                                 params=GeometryParams(**setup_params['geometry']))
+                    else:
+                        self.geometry = Geometry(edp_file,
+                                                 accelerometer=self.accelerometer,
+                                                 height=setup_params['geometry']['height'])
+
+                else:
+                    raise ValueError('Cannot create Geometry object, file '
+                                     f'{setup_fpath} should contain `template` '
+                                     'or `edp` keyword inside `geometry`.')
+
+                if material is not None:
+                    self.material = material
+
+                if accel is not None:
+                    self.accelerometer = accel
+
+            except KeyError as ex:
+                raise KeyError(f'Key {ex} was not found in a setup '
+                               f'file {setup_fpath}.')
+
+            freq_file = os.path.join(setup_path_or_geometry, 'freqs.npy')
+            if os.path.exists(freq_file) and ref_fr is None:
+                amp_file = os.path.join(setup_path_or_geometry, 'amp.npy')
+
+                freqs = np.load(freq_file)
+                amp = np.load(amp_file)
+
+                ph_path = os.path.join(setup_path_or_geometry, 'phase.npy')
+
+                if os.path.exists(ph_path):
+                    phase = np.load(ph_path)
+
+                else:
+                    phase = np.zeros_like(amp)
+
+                ref_fr = (freqs, amp * np.exp(1j * phase))
+
+
+
+        elif isinstance(setup_path_or_geometry, Geometry):
+            self.geometry = setup_path_or_geometry
+            if material is None or accel is None:
+                raise ValueError('Both `material` and `accelerometer` arguments '
+                                 'should not be `None` when creating a Problem '
+                                 'from Geometry object.')
+
+            self.material = material
+            self.accelerometer = accel
+
+        else:
+            raise TypeError('Argument `setup_path_or_geometry` should have one '
+                            'of the following types: str | os.PathLike | '
+                            f'Geometry, not {type(setup_path_or_geometry)}.')
+
+        if self.material.atype == 'isotropic':
+            if (self.material.E is not None and
+               self.material.G is not None and
+               self.material.beta is not None):
+                   self.nu = self.material.E / (2.0 * self.material.G) - 1.0
+                   self.D = (self.material.E * self.geometry.height**3 /
+                             (12.0 * (1.0 - self.nu**2)))
+                   self.beta = self.material.beta
+                   self.parameters = jnp.array([self.D, self.nu, self.beta])
+
+        if ref_fr is not None:
+            self.reference_fr = ref_fr
+
+        # OLD STARTS HERE
+        self.h = self.geometry.height
+        self.e = self.h / 2.0
+        self.rho = self.material.density
+
+        processed_ff_output = processFFOutput(getOutput(self.geometry.current_file))
 
         # Loading necessary data from model to GPU
         self.Ks = jnp.array(processed_ff_output["Ks"], dtype=jnp.float64)
@@ -72,11 +210,11 @@ class Problem:
         # BC term
         self.fInertia = self.rho * (self.fM + 1.0 / 3.0 * self.e ** 2 * self.fL)
 
-        if accelerometer_param is not None:
+        if self.accelerometer is not None:
             # TODO: check e vs 2e=h
             rho_corr = (
-                accelerometer_param["mass"]
-                / (np.pi * accelerometer_param["radius"] ** 2)
+                self.accelerometer.mass
+                / (np.pi * self.accelerometer.radius ** 2)
                 / self.e
             )
             self.MInertia += rho_corr * (
@@ -96,29 +234,32 @@ class Problem:
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
 
-    def getFRFunction(self, params_to_physical, batch_size=None):
+    def getFRFunction(self, params_to_physical = None, batch_size=None):
         """
         Creates a function to evaluate AFC.
-        
+
         Parameters
         ----------
-        params_to_physical : Callable
-            Function that converts chosen model parameters to the physical 
-            parameters of the model, D_ij storage modulus [Pa], beta_ij loss 
+        params_to_physical : Callable, optional
+            Function that converts chosen model parameters to the physical
+            parameters of the model, D_ij storage modulus [Pa], beta_ij loss
             factor [1], ij in [11, 12, 16, 22, 26, 66], in total 12 parameters.
-            Implemented to handle isotropic/orthotropic/general anisotropic 
+            Implemented to handle isotropic/orthotropic/general anisotropic
             elasticity; scaling, shifting of parameters for better minimization, etc..
+            If not present, self.material.transform is used.
         batch_size : int, optional
             If present, optimization will use batches to avoid memory error.
-            
+
         Returns
         -------
         callable
-            Function that takes array of frequencies `omega` [Hz] and the 
+            Function that takes array of frequencies `omega` [Hz] and the
             parameters `theta` and returns the FR array of complex amplitude in
             test point.
-            
+
         """
+        if params_to_physical is None:
+            params_to_physical = self.material.transform
 
         def _solve(f, params):
             # solve for one frequency f (in [Hz])
@@ -186,6 +327,26 @@ class Problem:
 
         return _get_afc_batched
 
+    def solveForward(self, freqs: np.ndarray) -> np.ndarray:
+        """
+        Solve forward problem for a given set of frequencies.
+
+        Uses self.parameters as a parameter vector.
+
+        Parameters
+        ----------
+        freqs : np.ndarray
+            Set of frequencies, for which the complex amplitudes will be computed.
+
+        Returns
+        -------
+        np.ndarray
+            Array of complex amplitudes.
+
+        """
+        fr_func = self.getFRFunction()
+        return fr_func(freqs, self.parameters)
+
     def getSolutionMatrices(self, D, beta):
         loss_moduli = beta * D
         e = self.e
@@ -211,31 +372,31 @@ class Problem:
             def MSELoss(params):
                 fr = fr_function(frequencies, params)
                 return jnp.mean(jnp.abs(fr - reference_fr) ** 2)
-           
+
             return MSELoss
 
         elif func_type == "RMSE":
             def RMSELoss(params):
                 fr = fr_function(frequencies, params)
                 return jnp.mean(jnp.abs((fr - reference_fr) / reference_fr) ** 2)
-            
+
             return RMSELoss
 
         elif func_type == "MSE_AFC":
             def MSE_AFCLoss(params):
                 fr = fr_function(frequencies, params)
                 return jnp.mean((jnp.abs(fr) - jnp.abs(reference_fr)) ** 2)
-            
+
             return MSE_AFCLoss
-        
+
         elif func_type == "MSE_LOG_AFC":
             def MSE_LOG_AFCLoss(params):
                 fr = fr_function(frequencies, params)
                 return jnp.mean((jnp.log(jnp.abs(fr)) -
                                  jnp.log(jnp.abs(reference_fr))) ** 2)
-            
+
             return MSE_LOG_AFCLoss
-        
+
         else:
             raise ValueError(f'Function type "{func_type}" is not supported!')
 

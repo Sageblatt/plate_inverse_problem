@@ -12,10 +12,10 @@ ATYPES = {'isotropic'}
 class MaterialParams:
     """Class that represents the list of parameters for given material."""
     density: float
-    E: float | None
-    G: float | None
-    beta: float | None
     atype: str # Anosotropy type, can be only 'isotropic' for now
+    E: float = None
+    G: float = None
+    beta: float = None
 
 
 class Material:
@@ -66,6 +66,7 @@ class Material:
                 self.G = params['G']
                 self.density = params['density']
                 self.beta = params['beta']
+                self.atype = params['atype']
 
 
         else:

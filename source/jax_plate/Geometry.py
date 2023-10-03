@@ -16,8 +16,8 @@ class GeometryParams:
     length: float
     width: float
     height: float
-    accel_x: float | None # HINT: these can be the coordinates of a test point without accel.
-    accel_y: float | None # None if the test point lies on a symmetry line.
+    accel_x: float = None # HINT: these can be the coordinates of a test point without accel.
+    accel_y: float = None # None if the test point lies on a symmetry line.
 
 
 class Geometry:

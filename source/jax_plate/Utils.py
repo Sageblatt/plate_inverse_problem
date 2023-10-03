@@ -61,3 +61,7 @@ def plot_fr(freqs, fr, fig=None, kind="Radial", **line_kwargs):
 def get_jax_plate_dir():
     """Returns an absolute path to a directory where jax_plate sources are located."""
     return os.path.abspath(os.path.dirname(__file__))
+
+def get_source_dir():
+    """Returns an absolute path to a source folder, where jax_plate dir is located."""
+    return os.path.split(get_jax_plate_dir())[0]
