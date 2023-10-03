@@ -1,7 +1,7 @@
 import os
 import json
 from dataclasses import dataclass
-from Utils import get_jax_plate_dir
+from .Utils import get_jax_plate_dir
 
 @dataclass
 class AccelerometerParams:
@@ -88,16 +88,3 @@ class Accelerometer:
             json.dump(params.__dict__, file, indent=4)
 
         return
-
-
-
-
-if __name__ == '__main__':
-    params = AccelerometerParams(1.7e-3, 3.8e-3, 8.7e-3)
-    print(params)
-
-    name = 'AP1030'
-    Accelerometer.create_accelerometer(params, name)
-
-    acc = Accelerometer(name)
-    print(acc.mass)

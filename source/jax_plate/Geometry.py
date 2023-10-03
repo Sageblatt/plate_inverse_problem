@@ -2,8 +2,8 @@ import os
 import re
 import shutil
 from dataclasses import dataclass
-from Utils import get_jax_plate_dir
-from Accelerometer import Accelerometer, AccelerometerParams
+from .Utils import get_jax_plate_dir
+from .Accelerometer import Accelerometer, AccelerometerParams
 
 
 # Available options are documented in Geometry.__init__ docstring.
@@ -236,10 +236,3 @@ class Geometry:
             edp.truncate()
 
         return
-
-
-
-if __name__ == '__main__':
-    params = GeometryParams(100, 50, 10, None, None)
-    acc = Accelerometer(AccelerometerParams(5, 10, 15))
-    g = Geometry('sh_i', acc, params, export_vtk=True)

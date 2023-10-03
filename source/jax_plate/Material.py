@@ -1,8 +1,8 @@
 import os
 import json
 from dataclasses import dataclass
-from Utils import get_jax_plate_dir
-import ParamTransforms
+from .Utils import get_jax_plate_dir
+from .ParamTransforms import isotropic
 
 # TODO: add support for anisotropic materials
 
@@ -12,9 +12,9 @@ ATYPES = {'isotropic'}
 class MaterialParams:
     """Class that represents the list of parameters for given material."""
     density: float
-    E: float
-    G: float
-    beta: float
+    E: float | None
+    G: float | None
+    beta: float | None
     atype: str # Anosotropy type, can be only 'isotropic' for now
 
 
@@ -61,7 +61,7 @@ class Material:
 
         if params['atype'] in ATYPES:
             if params['atype'] == 'isotropic':
-                self.transform = ParamTransforms.isotropic
+                self.transform = isotropic
                 self.E = params['E']
                 self.G = params['G']
                 self.density = params['density']
@@ -106,14 +106,3 @@ class Material:
             json.dump(params.__dict__, file, indent=4)
 
         return
-
-
-if __name__ == '__main__':
-    params = MaterialParams(100, 102, 1241, 0.01, 'isotropic')
-    print(params)
-
-    name = 'Example_material'
-    Material.create_material(params, name)
-
-    m = Material(name)
-    print(m.E)
