@@ -18,27 +18,24 @@ from jax.config import config
 config.update("jax_enable_x64", True)
 
 
-
 class Problem:
     """
     Defines the geometry and those of the parameters that are known before the
     experiment. Stores FEM matrices on GPU, produces differentiable jax functions.
     """
     def __init__(self,
-                 setup_path_or_geometry: str | os.PathLike | Geometry,
+                 geometry: Geometry = None,
                  material: Material = None,
                  accel: Accelerometer = None,
-                 ref_fr: tuple[np.ndarray, np.ndarray] = None): # TODO: independent from geometry import from setup
+                 ref_fr: tuple[np.ndarray, np.ndarray] = None,
+                 *,
+                 spath: str | os.PathLike = None): # TODO: independent from geometry import from setup
         """
         Constructor method.
 
         Parameters
         ----------
-        setup_path_or_geometry : str | os.PathLike | Geometry
-            A path to a setup folder or a Geometry object.
-            Setup folder should contain setup.json file, that contains 'geometry',
-            'accelerometer' and 'material' entities with corresponding parameters,
-            so the Geometry, Accelerometer and Material object can be created.
+        geometry : Geometry
             If this argument is the Geometry object, then `material` and `accel`
             arguments become mandatory.
         material : Material, optional
@@ -51,50 +48,84 @@ class Problem:
             Reference frequency response obtained from experiment,
             first element is an array of frequencies, second one is an array of
             complex amplitudes. The default is None.
+        spath: str | os.PathLike, optional
+            A path to a setup folder. Setup folder should contain setup.json file,
+            that contains any of 'geometry', 'accelerometer' and 'material'
+            entities with corresponding parameters, so the Geometry,
+            Accelerometer and Material object can be created. If any of these
+            entities is missing then corresponding argument should be provided.
 
         Returns
         -------
         None
 
         """
+        if (geometry, accel, material, spath) == (None, ) * 4:
+            raise ValueError('Cannot create a Problem object without arguments.')
 
-        if isinstance(setup_path_or_geometry, str | os.PathLike):
-            if not os.path.exists(setup_path_or_geometry):
-                raise ValueError(f'Path of the setup {setup_path_or_geometry} '
-                                 'does not exist.')
+        # Branch for creation without spath arg
+        if spath is None:
+            if None in (geometry, accel, material):
+                raise ValueError('Cannot create a Problem object without `spath` '
+                                 'argument if any of `geometry`, `accel`, '
+                                 '`material` arguments is `None`.')
 
-            elif not os.path.isdir(setup_path_or_geometry):
-                raise ValueError(f'Selected path {setup_path_or_geometry} is '
-                                 'not a directory.')
+            self.geometry = geometry
+            self.material = material
+            self.accelerometer = accel
 
-            setup_fpath = os.path.join(setup_path_or_geometry, 'setup.json')
+        # Branch for creation with spath arg
+        else:
+            if not isinstance(spath, str | os.PathLike):
+                raise TypeError('Argument `spath` should have one '
+                                'of the following types: str | os.PathLike, not '
+                                f'{type(spath)}.')
+
+            if not os.path.exists(spath):
+                raise ValueError(f'Path of the setup {spath} does not exist.')
+
+            elif not os.path.isdir(spath):
+                raise ValueError(f'Selected path {spath} is not a directory.')
+
+            setup_fpath = os.path.join(spath, 'setup.json')
 
             if not os.path.exists(setup_fpath):
                 raise FileNotFoundError(f'`setup.json` file was not found in '
-                                        'setup directory '
-                                        f'{setup_path_or_geometry}.')
+                                        f'setup directory {spath}.')
 
             with open(setup_fpath, 'r') as file:
                 setup_params = json.load(file)
 
-            try:
-                param_dict = {'accelerometer': (Accelerometer, AccelerometerParams),
-                              'material': (Material, MaterialParams)}
+            param_dict = {'accelerometer': (Accelerometer, AccelerometerParams),
+                          'material': (Material, MaterialParams)}
 
-                for key in param_dict:
-                    if isinstance(setup_params[key], str):
-                        setattr(self, key,
-                                param_dict[key][0](setup_params[key]))
+            # Try to read material and accel from setup.json if possible
+            for key in param_dict:
+                if key not in setup_params:
+                    continue
 
-                    elif isinstance(setup_params[key], dict):
-                        setattr(self, key,
-                                param_dict[key][0](param_dict[key][1](**setup_params[key])))
+                if isinstance(setup_params[key], str):
+                    setattr(self, key,
+                            param_dict[key][0](setup_params[key]))
 
-                    else:
-                        raise TypeError(f'In file {setup_fpath} key "{key}" '
-                                        'should have a value with type `str` or'
-                                        ' `dict`.')
+                elif isinstance(setup_params[key], dict):
+                    setattr(self, key,
+                            param_dict[key][0](param_dict[key][1](**setup_params[key])))
 
+                else:
+                    raise TypeError(f'In file {setup_fpath} key "{key}" '
+                                    'should have a value with type `str` or'
+                                    ' `dict`.')
+
+            # Override material and accel if explicit argument is given
+            if material is not None:
+                self.material = material
+
+            if accel is not None:
+                self.accelerometer = accel
+
+            # Try to read geometry from setup.json
+            if 'geometry' in setup_params:
                 if 'template' in setup_params['geometry']:
                     templ = setup_params['geometry']['template']
                     del setup_params['geometry']['template']
@@ -121,24 +152,19 @@ class Problem:
                                      f'{setup_fpath} should contain `template` '
                                      'or `edp` keyword inside `geometry`.')
 
-                if material is not None:
-                    self.material = material
+            # Override geometry if explicit argument is given
+            if geometry is not None:
+                self.geometry = geometry
 
-                if accel is not None:
-                    self.accelerometer = accel
-
-            except KeyError as ex:
-                raise KeyError(f'Key {ex} was not found in a setup '
-                               f'file {setup_fpath}.')
-
-            freq_file = os.path.join(setup_path_or_geometry, 'freqs.npy')
-            if os.path.exists(freq_file) and ref_fr is None:
-                amp_file = os.path.join(setup_path_or_geometry, 'amp.npy')
+            # Try to load reference frequency response if possible
+            freq_file = os.path.join(spath, 'freqs.npy')
+            if os.path.exists(freq_file):
+                amp_file = os.path.join(spath, 'amp.npy')
 
                 freqs = np.load(freq_file)
                 amp = np.load(amp_file)
 
-                ph_path = os.path.join(setup_path_or_geometry, 'phase.npy')
+                ph_path = os.path.join(spath, 'phase.npy')
 
                 if os.path.exists(ph_path):
                     phase = np.load(ph_path)
@@ -146,24 +172,12 @@ class Problem:
                 else:
                     phase = np.zeros_like(amp)
 
-                ref_fr = (freqs, amp * np.exp(1j * phase))
+                self.reference_fr = (freqs, amp * np.exp(1j * phase))
 
-
-
-        elif isinstance(setup_path_or_geometry, Geometry):
-            self.geometry = setup_path_or_geometry
-            if material is None or accel is None:
-                raise ValueError('Both `material` and `accelerometer` arguments '
-                                 'should not be `None` when creating a Problem '
-                                 'from Geometry object.')
-
-            self.material = material
-            self.accelerometer = accel
-
-        else:
-            raise TypeError('Argument `setup_path_or_geometry` should have one '
-                            'of the following types: str | os.PathLike | '
-                            f'Geometry, not {type(setup_path_or_geometry)}.')
+            if None in (self.accelerometer, self.geometry, self.material):
+                raise RuntimeError('One of the `geometry`, `accelerometer`, '
+                                   '`materials` attributes was not provided '
+                                   'in setup.json nor as an argument.')
 
         if self.material.atype == 'isotropic':
             if (self.material.E is not None and
@@ -175,12 +189,13 @@ class Problem:
                    self.beta = self.material.beta
                    self.parameters = jnp.array([self.D, self.nu, self.beta])
 
+        else:
+            raise NotImplementedError('Only `isotropic` atype is supported.')
+
         if ref_fr is not None:
             self.reference_fr = ref_fr
 
-        # OLD STARTS HERE
-        self.h = self.geometry.height
-        self.e = self.h / 2.0
+        self.e = self.geometry.height / 2.0
         self.rho = self.material.density
 
         processed_ff_output = processFFOutput(getOutput(self.geometry.current_file))
@@ -399,6 +414,31 @@ class Problem:
 
         else:
             raise ValueError(f'Function type "{func_type}" is not supported!')
+
+    def getEG(self, D: float, nu: float) -> tuple[float, float]:
+        """
+        Get Young's modulus E and shear modulus G for an isotropic material
+        from flexural rigidity D and Poisson's ratio nu.
+
+        Parameters
+        ----------
+        D : float
+            Flexural rigidity of a plate.
+
+        nu : float
+            Poisson's ratio of a plate.
+
+        Returns
+        -------
+        tuple[float, float]
+            Young's modulus E and shear modulus G in a tuple.
+
+        """
+        if self.material.atype != 'isotropic':
+            raise ValueError('Cannot define E and G of not isotropic material.')
+
+        E = 12 * D * (1 - nu ** 2) / self.geometry.height ** 3
+        return E, E / (2 * (1 + nu))
 
     # def getLossAndDerivatives(
     #    self, params_to_physical, frequencies, reference_afc, batch_size=None
