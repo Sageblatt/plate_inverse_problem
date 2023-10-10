@@ -4,6 +4,7 @@ import jax.scipy as jsp
 import numpy as np
 
 from typing import Callable
+import warnings
 
 import os
 import sys
@@ -196,15 +197,16 @@ class Problem:
                 self.D66 = self.material.G12*self.geometry.height**3/12
                 self.beta = self.material.beta
                 self.parameters = jnp.array([self.D11, self.material.nu12,
-                                         self.material.E1/self.material.E2,
-                                         self.D66, self.beta])
+                                             self.material.E1/self.material.E2,
+                                             self.D66, self.beta])
 
             else:
                 raise NotImplementedError(f'Only {ATYPES.keys()} atypes are supported.')
 
         except TypeError:
-            raise Warning('Some elastic moduli of a material were not provided, '
-                          'solving forward problem will not be possible.')
+            warnings.warn('Some elastic moduli of a material were not provided, '
+                          'solving forward problem as standalone will not be '
+                          'possible.', RuntimeWarning)
 
         if ref_fr is not None:
             self.reference_fr = ref_fr
@@ -429,10 +431,11 @@ class Problem:
         else:
             raise ValueError(f'Function type "{func_type}" is not supported!')
 
-    def getEG(self, D: float, nu: float) -> tuple[float, float]:
+    def getEG(self, D: float = None, nu: float = None) -> tuple[float, float]:
         """
         Get Young's modulus E and shear modulus G for an isotropic material
-        from flexural rigidity D and Poisson's ratio nu.
+        from flexural rigidity D and Poisson's ratio nu. If one of the arguments
+        is None tries to get values from stored in Problem object ones.
 
         Parameters
         ----------
@@ -449,10 +452,57 @@ class Problem:
 
         """
         if self.material.atype != 'isotropic':
-            raise ValueError('Cannot define E and G of not isotropic material.')
+            raise ValueError('Cannot define E and G of a non-isotropic material.')
+
+        if None in (D, nu):
+            try:
+                D, nu = self.parameters[:2]
+            except AttributeError:
+                raise RuntimeError('Cannot get E, G parameters from function '
+                                   'args or Problem attributes.')
 
         E = 12 * D * (1 - nu ** 2) / self.geometry.height ** 3
         return E, E / (2 * (1 + nu))
+
+    def getOModuli(self, D11: float = None,
+                   nu12: float = None,
+                   E_rat: float = None,
+                   D66: float = None) -> tuple[float, float, float, float]:
+        """
+        Get E_1, E_2, nu_12 and G_12 moduli for an orthotropic material from
+        D_11, nu_12, E_1 / E_2 ratio and D_66. If one of the arguments
+        is None tries to get values from stored in Problem object ones.
+
+        Parameters
+        ----------
+        D11 : float, optional
+        nu12 : float, optional
+        E_rat : float, optional
+        D66 : float, optional
+
+        Returns
+        -------
+        E_1 : float
+        E_2 : float
+        nu_12 : float
+        G_12 : float
+
+        """
+        if self.material.atype != 'orthotropic':
+            raise ValueError('Cannot define E1, E2, G12, nu12 of a '
+                             'non-orthotropic material.')
+
+        if None in (D11, nu12, E_rat, D66):
+            try:
+                D11, nu12, E_rat, D66 = self.parameters[0:4]
+            except AttributeError:
+                raise RuntimeError('Cannot get E, G parameters from function '
+                                   'args or Problem attributes.')
+
+        nu21 = E_rat * nu12
+        E1 = D11 * 12 * (1 - nu12*nu21) / self.geometry.height**3
+        return E1, E1 / E_rat, nu12, D66 * 12.0 / self.geometry.height**3
+
 
     # def getLossAndDerivatives(
     #    self, params_to_physical, frequencies, reference_afc, batch_size=None
