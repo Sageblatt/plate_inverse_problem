@@ -6,10 +6,11 @@ import numpy as np
 from typing import Callable
 
 import os
+import sys
 import json
 
 from .Accelerometer import Accelerometer, AccelerometerParams
-from .Material import Material, MaterialParams
+from .Material import Material, MaterialParams, ATYPES
 from .Geometry import Geometry, GeometryParams
 
 from .pyFFInterface import getOutput, evaluateMatrixAndRHS, processFFOutput
@@ -178,19 +179,32 @@ class Problem:
                 raise RuntimeError('One of the `geometry`, `accelerometer`, '
                                    '`materials` attributes was not provided '
                                    'in setup.json nor as an argument.')
+        try:
+            if self.material.atype == 'isotropic':
+                self.nu = self.material.E / (2.0 * self.material.G) - 1.0
+                self.D = (self.material.E * self.geometry.height**3 /
+                          (12.0 * (1.0 - self.nu**2)))
+                self.beta = self.material.beta
+                self.parameters = jnp.array([self.D, self.nu, self.beta])
 
-        if self.material.atype == 'isotropic':
-            if (self.material.E is not None and
-               self.material.G is not None and
-               self.material.beta is not None):
-                   self.nu = self.material.E / (2.0 * self.material.G) - 1.0
-                   self.D = (self.material.E * self.geometry.height**3 /
-                             (12.0 * (1.0 - self.nu**2)))
-                   self.beta = self.material.beta
-                   self.parameters = jnp.array([self.D, self.nu, self.beta])
 
-        else:
-            raise NotImplementedError('Only `isotropic` atype is supported.')
+            elif self.material.atype == 'orthotropic':
+                self.nu21 = self.material.E1/self.material.E2 * self.material.nu12
+
+                self.D11 = (self.material.E1 * self.geometry.height**3 /
+                          (12 * (1 - self.material.nu12*self.nu21)))
+                self.D66 = self.material.G12*self.geometry.height**3/12
+                self.beta = self.material.beta
+                self.parameters = jnp.array([self.D11, self.material.nu12,
+                                         self.material.E1/self.material.E2,
+                                         self.D66, self.beta])
+
+            else:
+                raise NotImplementedError(f'Only {ATYPES.keys()} atypes are supported.')
+
+        except TypeError:
+            raise Warning('Some elastic moduli of a material were not provided, '
+                          'solving forward problem will not be possible.')
 
         if ref_fr is not None:
             self.reference_fr = ref_fr

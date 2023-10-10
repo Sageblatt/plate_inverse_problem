@@ -2,19 +2,27 @@ import os
 import json
 from dataclasses import dataclass
 from .Utils import get_jax_plate_dir
-from .ParamTransforms import isotropic
+from .ParamTransforms import isotropic, orthotropic
 
 # TODO: add support for anisotropic materials
 
-ATYPES = {'isotropic'}
+ATYPES = {'isotropic': ['E', 'G', 'beta'],
+          'orthotropic': ['E1', 'E2', 'G12', 'nu12', 'beta']}
 
 @dataclass
 class MaterialParams:
     """Class that represents the list of parameters for given material."""
     density: float
-    atype: str # Anosotropy type, can be only 'isotropic' for now
+    atype: str # Anosotropy type, possible options are listed in ATYPES dict
+
     E: float = None
     G: float = None
+
+    E1: float = None
+    E2: float = None
+    G12: float = None
+    nu12: float = None
+
     beta: float = None
 
 
@@ -60,14 +68,16 @@ class Material:
                             '`str` or `MaterialParams.`')
 
         if params['atype'] in ATYPES:
-            if params['atype'] == 'isotropic':
-                self.transform = isotropic
-                self.E = params['E']
-                self.G = params['G']
-                self.density = params['density']
-                self.beta = params['beta']
-                self.atype = params['atype']
+            self.density = params['density']
+            self.atype = params['atype']
+            for param in ATYPES[self.atype]:
+                setattr(self, param, params[param])
 
+            if self.atype == 'isotropic':
+                self.transform = isotropic
+
+            elif self.atype == 'orthotropic':
+                self.transform = orthotropic
 
         else:
             raise ValueError(f'Invalid anisotropy type for material '
@@ -92,6 +102,7 @@ class Material:
         None
 
         """
+        mat = Material(params)
         materials_folder = os.path.join(get_jax_plate_dir(), 'materials')
 
         if not os.path.exists(materials_folder):
@@ -104,6 +115,6 @@ class Material:
         fpath = os.path.join(materials_folder, material_name + '.json')
 
         with open(fpath, 'w') as file:
-            json.dump(params.__dict__, file, indent=4)
+            json.dump(mat.__dict__, file, indent=4)
 
         return
