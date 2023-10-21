@@ -15,6 +15,7 @@ from .Material import Material, MaterialParams, ATYPES
 from .Geometry import Geometry, GeometryParams
 
 from .pyFFInterface import getOutput, evaluateMatrixAndRHS, processFFOutput
+from .Utils import get_source_dir
 
 from jax.config import config
 config.update("jax_enable_x64", True)
@@ -31,7 +32,7 @@ class Problem:
                  accel: Accelerometer = None,
                  ref_fr: tuple[np.ndarray, np.ndarray] = None,
                  *,
-                 spath: str | os.PathLike = None): # TODO: independent from geometry import from setup
+                 spath: str | os.PathLike = None):
         """
         Constructor method.
 
@@ -51,11 +52,13 @@ class Problem:
             first element is an array of frequencies, second one is an array of
             complex amplitudes. The default is None.
         spath: str | os.PathLike, optional
-            A path to a setup folder. Setup folder should contain setup.json file,
-            that contains any of 'geometry', 'accelerometer' and 'material'
-            entities with corresponding parameters, so the Geometry,
-            Accelerometer and Material object can be created. If any of these
-            entities is missing then corresponding argument should be provided.
+            A path to a setup folder. Relative path can be used to locate
+            folders within `JAX_PLATE_SOURCE_DIR/setups`. Setup folder should
+            contain `setup.json` file, that contains any of 'geometry',
+            'accelerometer' and 'material' entities with corresponding
+            parameters, so the Geometry, Accelerometer and Material object can
+            be created. If any of these entities is missing then corresponding
+            argument should be provided.
 
         Returns
         -------
@@ -82,6 +85,9 @@ class Problem:
                 raise TypeError('Argument `spath` should have one '
                                 'of the following types: str | os.PathLike, not '
                                 f'{type(spath)}.')
+
+            if not os.path.isabs(spath):
+                spath = os.path.join(get_source_dir(), 'setups', spath)
 
             if not os.path.exists(spath):
                 raise ValueError(f'Path of the setup {spath} does not exist.')
