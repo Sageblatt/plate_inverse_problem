@@ -8,3 +8,7 @@ __pycache__
 source/misc/
 
 source/optimization/
+
+source/setups/
+
+source/jax_plate/materials/
