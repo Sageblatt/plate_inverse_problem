@@ -5,6 +5,8 @@ import numpy as np
 
 from collections import namedtuple
 
+from .ParamTransforms import FixedParameterFunction
+
 
 @jax.jit
 def get_sd_and_norm(
@@ -88,8 +90,8 @@ def get_model_newt(f):
 #    n = r.shape[0]
 #    J = res_jacobian(u_ref, w, dv, p)
 #    return r.T@r/n, r.T@J/n, J.T@J/n
-trOptResult = namedtuple(
-    "trOptResult",
+optResult = namedtuple(
+    "optResult",
     ["x", "f", "f_history", "x_history", "grad_history", "niter", "status"],
 )
 
@@ -169,15 +171,10 @@ def optimize_trust_region(
         if steps_without_update >= steps_to_stall:
             status = "Stalled"
             break
-    return trOptResult(x, cur_f, f_history, x_history, grad_history, k, status)
+    return optResult(x, cur_f, f_history, x_history, grad_history, k, status)
 
 
-gdOptResult = namedtuple(
-    "gdOptResult", ["x", "f", "f_history", "x_history", "grad_history", "niter",]
-)
-
-
-def optimize_gd(f, x_0, N_steps, h, f_min=1e-8):
+def optimize_gd(f, x_0, N_steps=100, h=0.01, f_min=1e-8):
     value_and_gradient = jax.jit(jax.value_and_grad(f))
 
     x = x_0
@@ -185,6 +182,7 @@ def optimize_gd(f, x_0, N_steps, h, f_min=1e-8):
     x_history = []
     f_history = []
     grad_history = []
+    status = 'Running'
 
     for k in range(N_steps):
         cur_f, g = value_and_gradient(x)
@@ -194,8 +192,122 @@ def optimize_gd(f, x_0, N_steps, h, f_min=1e-8):
         grad_history.append(g)
 
         if cur_f <= f_min:
+            status = 'Converged'
             break
 
         x -= h * g
 
-    return gdOptResult(x, cur_f, f_history, x_history, grad_history, k,)
+    return optResult(x, cur_f, f_history, x_history, grad_history, k, status)
+
+
+def optimize_cd(f, x_0, N_steps=100, h=0.01, f_min=1e-8):
+    value_and_gradient = jax.jit(jax.value_and_grad(f))
+
+    x = x_0
+
+    n = x_0.size
+    assert n >= 2
+    template = jnp.eye(n)
+
+    x_history = []
+    f_history = []
+    grad_history = []
+    status = 'Running'
+
+    for k in range(N_steps):
+        for i in range(n):
+            cur_f, g = value_and_gradient(x)
+
+            g *= template[i, :]
+
+            x_history.append(x)
+            f_history.append(cur_f)
+            grad_history.append(g)
+
+            if cur_f <= f_min:
+                status = 'Converged'
+                break
+
+            x -= h * g
+
+    return optResult(x, cur_f, f_history, x_history, grad_history, k, status)
+
+
+def optimize_cd_mem(f, x_0, N_steps=100, h=0.01, f_min=1e-8):
+    f_ = jax.jit(f)
+
+    x = x_0
+
+    n = x_0.size
+    assert n >= 2
+    template = jnp.reshape(jnp.where(jnp.eye(n)==0)[1], (n, n-1))
+
+    grad_template = jnp.eye(n)
+
+    x_history = []
+    f_history = []
+    grad_history = []
+    status = 'Running'
+
+    for k in range(N_steps):
+        for i in range(n):
+            fixed_f = FixedParameterFunction(f_, n, template[i], x[template[i]])
+            cur_f, g = jax.value_and_grad(fixed_f)(x[fixed_f.free_idx])
+
+            g *= grad_template[i]
+
+            x_history.append(x)
+            f_history.append(cur_f)
+            grad_history.append(g)
+
+            if cur_f <= f_min:
+                status = 'Converged'
+                break
+
+            x -= h * g
+
+    return optResult(x, cur_f, f_history, x_history, grad_history, k, status)
+
+
+def optimize_cd_mem2(f, x_0, N_steps=100, h=0.01, f_min=1e-8):
+    def fixed(x, i, other):
+        return f(jnp.insert(other, i, x))
+
+    f_ = jax.jit(fixed)
+
+    x = x_0
+
+    n = x_0.size
+    assert n >= 2
+    template = jnp.reshape(jnp.where(jnp.eye(n)==0)[1], (n, n-1))
+    h_ = jnp.full(n, h)
+
+    grad_template = jnp.eye(n)
+
+    x_history = []
+    f_history = []
+    grad_history = []
+    status = 'Running'
+
+    for k in range(N_steps):
+        for i in range(n):
+            cur_f, g = jax.value_and_grad(f_)(x[i], i, x[template[i]])
+
+            g *= grad_template[i]
+
+            x_history.append(x)
+            f_history.append(cur_f)
+            grad_history.append(g)
+
+            if cur_f <= f_min:
+                status = 'Converged'
+                break
+
+            x -= h_[i] * g
+
+            if f_(x[i], i, x[template[i]]) > f_history[-1]:
+                h_[i] /= 5
+                x = x_history[-1] - h_[i]*g
+
+
+    return optResult(x, cur_f, f_history, x_history, grad_history, k, status)
