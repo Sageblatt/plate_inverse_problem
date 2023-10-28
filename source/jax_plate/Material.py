@@ -118,3 +118,6 @@ class Material:
             json.dump(mat.__dict__, file, indent=4)
 
         return
+
+    def __str__(self):
+        return f'Material with {self.__dict__}.'

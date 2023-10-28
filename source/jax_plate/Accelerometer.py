@@ -88,3 +88,6 @@ class Accelerometer:
             json.dump(params.__dict__, file, indent=4)
 
         return
+
+    def __str__(self):
+        return f'Accelerometer with {self.__dict__}.'

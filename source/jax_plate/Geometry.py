@@ -236,3 +236,6 @@ class Geometry:
             edp.truncate()
 
         return
+
+    def __str__(self):
+        return f'Geometry with {self.__dict__}.'

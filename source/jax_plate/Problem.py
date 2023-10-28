@@ -1,21 +1,24 @@
+import os
+import sys
+import json
+import warnings
+from typing import Callable
+from time import perf_counter, gmtime, strftime
+
 import jax
 import jax.numpy as jnp
 import jax.scipy as jsp
 import numpy as np
-
-from typing import Callable
-import warnings
-
-import os
-import sys
-import json
+import numpy.typing as npt
 
 from .Accelerometer import Accelerometer, AccelerometerParams
 from .Material import Material, MaterialParams, ATYPES
 from .Geometry import Geometry, GeometryParams
 
+from .Input import Compressor
 from .pyFFInterface import getOutput, evaluateMatrixAndRHS, processFFOutput
 from .Utils import get_source_dir
+from .Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 
 from jax.config import config
 config.update("jax_enable_x64", True)
@@ -271,19 +274,12 @@ class Problem:
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
 
-    def getFRFunction(self, params_to_physical = None, batch_size=None):
+    def getFRFunction(self, batch_size: int = None):
         """
         Creates a function to evaluate AFC.
 
         Parameters
         ----------
-        params_to_physical : Callable, optional
-            Function that converts chosen model parameters to the physical
-            parameters of the model, D_ij storage modulus [Pa], beta_ij loss
-            factor [1], ij in [11, 12, 16, 22, 26, 66], in total 12 parameters.
-            Implemented to handle isotropic/orthotropic/general anisotropic
-            elasticity; scaling, shifting of parameters for better minimization, etc..
-            If not present, self.material.transform is used.
         batch_size : int, optional
             If present, optimization will use batches to avoid memory error.
 
@@ -295,16 +291,13 @@ class Problem:
             test point.
 
         """
-        if params_to_physical is None:
-            params_to_physical = self.material.transform
-
         def _solve(f, params):
             # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
             e = self.e
-            # params_to_physical is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
-            # theta is the set of parameters; for example see Utils.isotropic_to_full
-            D, beta = params_to_physical(params, omega)
+            # transform is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
+            # theta is the set of parameters; for example see ParamTransforms.isotropic_to_full
+            D, beta = self.material.transform(params, omega)
             loss_moduli = beta * D
 
             # K_real = \sum K_ij*D_ij/(2.*e)
@@ -364,16 +357,20 @@ class Problem:
 
         return _get_afc_batched
 
-    def solveForward(self, freqs: np.ndarray) -> np.ndarray:
+    def solveForward(self, freqs: np.ndarray, params=None) -> np.ndarray:
         """
         Solve forward problem for a given set of frequencies.
 
-        Uses self.parameters as a parameter vector.
+        Uses self.parameters as a parameter vector or a custom array specified
+        in `params` argument.
 
         Parameters
         ----------
         freqs : np.ndarray
             Set of frequencies, for which the complex amplitudes will be computed.
+
+        params : np.ndarray, optional
+            Parameters to be used in forward problem, if provided.
 
         Returns
         -------
@@ -381,8 +378,218 @@ class Problem:
             Array of complex amplitudes.
 
         """
+        if params is None:
+            params = self.parameters
+
+        params = jnp.array(params)
+
         fr_func = self.getFRFunction()
-        return fr_func(freqs, self.parameters)
+        return fr_func(freqs, params)
+
+    def solveInverseLocal(self, x0: npt.ArrayLike,
+                          loss_type: str,
+                          optimizer: str,
+                          compression: tuple[bool, int] = (False, 0),
+                          comp_alg: int = 1,
+                          ref_fr: tuple[np.ndarray, np.ndarray] = None,
+                          use_rel: bool = False,
+                          report: bool = True,
+                          log: bool = True,
+                          report_moduli: bool = True,
+                          case_name: str = '',
+                          uid: str = None,
+                          extra_info: str = '',
+                          **opt_kwargs):
+        """
+        Solve the local inverse problem for given initial guess.
+
+        Parameters
+        ----------
+        x0 : numpy.typing.ArrayLike
+            Initial guess for each parameter. If `use_rel` argument is `True`
+            then `x0` describes a relative difference between initial guess and
+            parameters provided in self.parameters.
+        loss_type : str
+            Type of a loss to be optimized. Available options are:
+                - `MSE`, mean squared error.
+                - `RMSE`, relative mean squared error.
+                - `MSE_AFC`, mean squared error, amplitudes of frequency
+                response are optimized only.
+                - `MSE_LOG_AFC`, similar to `MSE_AFC`, but the logarithm of
+                amplitudes is used.
+        optimizer : str
+            Type of an optimizing algorithm to be used. Available options are:
+                - `trust_region`, second-order optimizer.
+                See jax_plate.Optimizers.solve_trust_region.
+                - `coord_descent`, coordinate descent.
+                See jax_plate.Optimizers.optimize_cd.
+                - `coord_descent_mem`, memory-efficient version of coordinate
+                descent. See jax_plate.Optimizers.optimize_cd_mem.
+                - `grad_descent`, gradient descent optimization.
+                See jax_plate.Optimizers.optimize_gd.
+        compression : tuple[bool, int], optional
+            A tuple, in which the first element defines whether a compression
+            algorithm for reference frequency response will be used or not.
+            The second element defines amount of points in the dataset after
+            compression. The default is (False, 0).
+        comp_alg : int, optional
+            If `compression[0]` is `True` defines the type of algorithm used
+            for compression. See jax_plate.Input.Compressor for more details.
+            The default is 1.
+        ref_fr : tuple[np.ndarray, np.ndarray], optional
+            Reference frequency response. If `None` the value
+            from self.reference_fr will be used. The default is None.
+        use_rel : bool, optional
+            See `x0` argument description. The default is False.
+        report : bool, optional
+            Generate human-readable report with optimization parameters.
+            The default is True.
+        log : bool, optional
+            Write all optimization steps to `.npz` archive. The default is True.
+        report_moduli : bool, optional
+            If `True` the information about physical elastic moduli will be
+            included in the report (etc. Young's modulus and shear modulus for
+            isotropic material). The default is True.
+        case_name : str, optional
+            Name which will be used as prefix to log and report filenames.
+            The default is ''.
+        uid : str, optional
+            Unique id - a name which will be used as a body of log and report
+            filenames. If `None` system date and time will be used. The default
+            is None.
+        extra_info : str, optional
+            Additional info to include into the report. The default is ''.
+        **opt_kwargs
+            Optimizer keyword arguments.
+
+        Returns
+        -------
+        Optimizers.optResult
+            A namedtuple with optimization result and iteration history.
+
+        """
+        if ref_fr is None:
+            ref_fr = getattr(self, 'reference_fr', None)
+            if ref_fr is None:
+                raise ValueError('Cannot solve inverse problem as `ref_fr` '
+                                 'argument was not provided and the '
+                                 "Problem object doesn't have a reference_fr "
+                                 'attribute.')
+            else:
+                ref_fr = [*ref_fr]
+
+        if not isinstance(compression, tuple):
+            raise TypeError('`compression` argument should have a type `tuple`,'
+                            f'not {type(compression)}.')
+
+        elif len(compression) != 2:
+            raise ValueError('`compression` tuple should have 2 elements, not '
+                             f'{len(compression)}.')
+
+
+        if compression[0]:
+            comp = Compressor(ref_fr[0], ref_fr[1], compression[1], comp_alg)
+            ref_fr[0], ref_fr[1] = comp(compression[1])
+
+        loss = self.getLossFunction(ref_fr[0], ref_fr[1], loss_type)
+
+        if use_rel:
+            if getattr(self, 'parameters', None) is None:
+                raise ValueError('Cannot use `x0` as relative coefficients of '
+                                 'correction as Problem object has no '
+                                 '`parameters` attribute.')
+
+            else:
+                x0 = jnp.array(self.parameters) * (jnp.array(x0) + 1)
+        else:
+            x0 = jnp.array(x0)
+
+        if optimizer == 'trust_region':
+            optimizer_func = optimize_trust_region
+
+        elif optimizer == 'coord_descent':
+            optimizer_func = optimize_cd
+
+        elif optimizer == 'coord_descent_mem':
+            optimizer_func = optimize_cd_mem2
+
+        elif optimizer == 'grad_descent':
+            optimizer_func = optimize_gd
+
+        else:
+            raise ValueError(f'Optimizer type `{optimizer}` is not supported!')
+
+        t_start = perf_counter()
+        result = optimizer_func(loss, x0, **opt_kwargs)
+        t_end = perf_counter()
+        elapsed = (t_end - t_start) / 60
+
+        date_str = strftime("%d_%m_%Y_%H_%M_%S", gmtime())
+
+        if uid is None:
+            full_str = case_name + date_str
+
+        else:
+            full_str = case_name + uid
+
+        if report:
+            rel_err1 = 'Unknown'
+            rel_err2 = 'Unknown'
+            if getattr(self, 'parameters', None) is not None:
+                params0 = np.array(self.parameters)
+                rel_err1 = (params0 - np.array(x0)) / params0
+                rel_err2 = (params0 - np.array(result.x)) / params0
+
+                if report_moduli:
+                    other_moduli0 = np.array(self.getPhysicalModuli(x0))
+                    other_moduli = np.array(self.getPhysicalModuli(result.x))
+                    other_moduli_real = np.array(self.getPhysicalModuli(params0))
+                    om_r_err1 = np.array((other_moduli0 - other_moduli_real) / other_moduli_real)
+                    om_r_err2 = np.array((other_moduli - other_moduli_real) / other_moduli_real)
+
+            def a2s(s):
+                if isinstance(s, str):
+                    return s
+
+                return np.array2string(np.array(s), separator=', ')
+
+            mod_str1 = ''
+            mod_str2 = ''
+            if report_moduli:
+                mod_str1 = (f'In physical moduli: {a2s(other_moduli0)}\n'
+                            f'With rel. error: {a2s(om_r_err1)}\n')
+                mod_str2 = (f'In physical moduli: {a2s(other_moduli)}\n'
+                            f'With rel. error: {a2s(om_r_err2)}\n')
+
+
+            rep_str = (f'{self.accelerometer}\n{self.material}\n{self.geometry}\n'
+                       + extra_info +
+                       f'Starting parameters: {a2s(x0)}.\n'
+                       f'With relative error: {a2s(rel_err1)}.\n' +
+                       mod_str1 +
+                       f'Initial loss: {result.f_history[0]}.\n'
+                       f'Elapsed time: {elapsed} min.\n'
+                       f'After optimization: {a2s(result.x)}.\n'
+                       f'With relative error: {a2s(rel_err2)}.\n' +
+                       mod_str2 +
+                       f'Resulting loss: {result.f}.\n'
+                       f'Optimization status: {result.status}.\n'
+                       f'Optimizer parameters: {opt_kwargs}\n')
+            print(rep_str, end='')
+
+            full_path = os.path.join(get_source_dir(), 'optimization',
+                                     full_str + '.txt')
+            with open(full_path, 'w+') as file:
+                file.write(rep_str)
+
+        if log:
+            f_ = np.array(result.f_history + [result.f])
+            x_ = np.array(result.x_history + [result.x])
+            k_ = np.array([result.niter])
+            np.savez_compressed(os.path.join(get_source_dir(), 'optimization',
+                                full_str), x=x_, f=f_, k=k_)
+
+        return result
 
     def getSolutionMatrices(self, D, beta):
         loss_moduli = beta * D
@@ -395,15 +602,13 @@ class Problem:
 
     def getLossFunction(
         self,
-        params_to_physical: Callable,
         frequencies: jax.Array,
         reference_fr: jax.Array,
-        func_type: str, # Available options are: MSE, RMSE, MSE_AFC
+        func_type: str, # Available options are: MSE, RMSE, MSE_AFC, MSE_LOG_AFC
         batch_size: int = None
     ) -> Callable:
         assert frequencies.shape[0] == reference_fr.shape[0]
-
-        fr_function = self.getFRFunction(params_to_physical, batch_size)
+        fr_function = self.getFRFunction(batch_size)
 
         if func_type == "MSE":
             def MSELoss(params):
@@ -509,6 +714,30 @@ class Problem:
         E1 = D11 * 12 * (1 - nu12*nu21) / self.geometry.height**3
         return E1, E1 / E_rat, nu12, D66 * 12.0 / self.geometry.height**3
 
+    def getPhysicalModuli(self, params: np.ndarray | jax.Array) -> tuple:
+        """
+        Wrapper around Problem.getEG and other similar functions that
+        automatically chooses the correct one depending in self.material.atype.
+
+        Parameters
+        ----------
+        params : np.ndarray | jax.Array
+            Parameters to be tranformed.
+
+        Returns
+        -------
+        tuple
+            Tuple of float containing physical moduli for given material.
+
+        """
+        if self.material.atype == 'isotropic':
+            return self.getEG(params[0], params[1])
+
+        elif self.material.atype == 'orthotropic':
+            return self.getOModuli(params[0], params[1], params[2], params[3])
+
+        else:
+            return NotImplementedError(f'Only {ATYPES.keys()} atypes are supported.')
 
     # def getLossAndDerivatives(
     #    self, params_to_physical, frequencies, reference_afc, batch_size=None

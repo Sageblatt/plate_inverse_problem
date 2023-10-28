@@ -4,6 +4,14 @@ from typing import Callable
 
 MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
 
+"""
+Parameter transform is a function that converts chosen model parameters to the
+physical parameters of the model, D_ij storage modulus [Pa], beta_ij loss
+factor [1], ij in [11, 12, 16, 22, 26, 66], in total 12 parameters.
+Implemented to handle isotropic/orthotropic/general anisotropic
+elasticity; scaling, shifting of parameters for better minimization, etc..
+"""
+
 
 class FixedParameterFunction:
     """
@@ -91,7 +99,7 @@ def four_parameter_fd_isotropic(params, omega):
     # four-parameter damping model
     a = params[2]
     b = params[3]
-    alpha = params[4] 
+    alpha = params[4]
 
     fd_part = (1. + a*(1.j*omega)**alpha)/(1. + b*(1.j*omega)**alpha)
     beta = fd_part.imag
@@ -101,7 +109,7 @@ def four_parameter_fd_isotropic(params, omega):
     betas = jnp.full_like(Ds, beta)
 
     return Ds, betas
-    
+
 #def orthotropic_four_parameter_fd(params, omega):
 #    D_11 = params[0] # D_11 = E_1 h**3/12(1 - nu_12*nu_21)
 #    nu_12 = params[1]
@@ -111,7 +119,7 @@ def four_parameter_fd_isotropic(params, omega):
 #    # four-parameter damping model
 #    a = params[4]
 #    b = params[5]
-#    alpha = params[6] 
+#    alpha = params[6]
 #
 #    nu_21 = E_ratio*nu_12
 #    D_12 = nu_21*D_11
