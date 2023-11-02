@@ -523,8 +523,8 @@ class Problem:
                     other_moduli0 = np.array(self.getPhysicalModuli(x0))
                     other_moduli = np.array(self.getPhysicalModuli(result.x))
                     other_moduli_real = np.array(self.getPhysicalModuli(params0))
-                    om_r_err1 = np.array((other_moduli0 - other_moduli_real) / other_moduli_real)
-                    om_r_err2 = np.array((other_moduli - other_moduli_real) / other_moduli_real)
+                    om_r_err1 = np.array((other_moduli_real - other_moduli0) / other_moduli_real)
+                    om_r_err2 = np.array((other_moduli_real - other_moduli) / other_moduli_real)
 
             def a2s(s):
                 if isinstance(s, str):
