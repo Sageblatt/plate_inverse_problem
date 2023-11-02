@@ -1,5 +1,4 @@
 import os
-import sys
 import json
 import warnings
 from typing import Callable
@@ -12,7 +11,7 @@ import numpy as np
 import numpy.typing as npt
 
 from .Accelerometer import Accelerometer, AccelerometerParams
-from .Material import Material, MaterialParams, ATYPES
+from .Material import Material, MaterialParams
 from .Geometry import Geometry, GeometryParams
 
 from .Input import Compressor
@@ -190,27 +189,7 @@ class Problem:
                                    '`materials` attributes was not provided '
                                    'in setup.json nor as an argument.')
         try:
-            if self.material.atype == 'isotropic':
-                self.nu = self.material.E / (2.0 * self.material.G) - 1.0
-                self.D = (self.material.E * self.geometry.height**3 /
-                          (12.0 * (1.0 - self.nu**2)))
-                self.beta = self.material.beta
-                self.parameters = jnp.array([self.D, self.nu, self.beta])
-
-
-            elif self.material.atype == 'orthotropic':
-                self.nu21 = self.material.E1/self.material.E2 * self.material.nu12
-
-                self.D11 = (self.material.E1 * self.geometry.height**3 /
-                          (12 * (1 - self.material.nu12*self.nu21)))
-                self.D66 = self.material.G12*self.geometry.height**3/12
-                self.beta = self.material.beta
-                self.parameters = jnp.array([self.D11, self.material.nu12,
-                                             self.material.E1/self.material.E2,
-                                             self.D66, self.beta])
-
-            else:
-                raise NotImplementedError(f'Only {ATYPES.keys()} atypes are supported.')
+            self.parameters = jnp.array(self.material.get_params(self.geometry.height))
 
         except TypeError:
             warnings.warn('Some elastic moduli of a material were not provided, '
@@ -642,87 +621,17 @@ class Problem:
         else:
             raise ValueError(f'Function type "{func_type}" is not supported!')
 
-    def getEG(self, D: float = None, nu: float = None) -> tuple[float, float]:
+    def getPhysicalModuli(self, params: np.ndarray | jax.Array = None) -> tuple:
         """
-        Get Young's modulus E and shear modulus G for an isotropic material
-        from flexural rigidity D and Poisson's ratio nu. If one of the arguments
-        is None tries to get values from stored in Problem object ones.
-
-        Parameters
-        ----------
-        D : float
-            Flexural rigidity of a plate.
-
-        nu : float
-            Poisson's ratio of a plate.
-
-        Returns
-        -------
-        tuple[float, float]
-            Young's modulus E and shear modulus G in a tuple.
-
-        """
-        if self.material.atype != 'isotropic':
-            raise ValueError('Cannot define E and G of a non-isotropic material.')
-
-        if None in (D, nu):
-            try:
-                D, nu = self.parameters[:2]
-            except AttributeError:
-                raise RuntimeError('Cannot get E, G parameters from function '
-                                   'args or Problem attributes.')
-
-        E = 12 * D * (1 - nu ** 2) / self.geometry.height ** 3
-        return E, E / (2 * (1 + nu))
-
-    def getOModuli(self, D11: float = None,
-                   nu12: float = None,
-                   E_rat: float = None,
-                   D66: float = None) -> tuple[float, float, float, float]:
-        """
-        Get E_1, E_2, nu_12 and G_12 moduli for an orthotropic material from
-        D_11, nu_12, E_1 / E_2 ratio and D_66. If one of the arguments
-        is None tries to get values from stored in Problem object ones.
-
-        Parameters
-        ----------
-        D11 : float, optional
-        nu12 : float, optional
-        E_rat : float, optional
-        D66 : float, optional
-
-        Returns
-        -------
-        E_1 : float
-        E_2 : float
-        nu_12 : float
-        G_12 : float
-
-        """
-        if self.material.atype != 'orthotropic':
-            raise ValueError('Cannot define E1, E2, G12, nu12 of a '
-                             'non-orthotropic material.')
-
-        if None in (D11, nu12, E_rat, D66):
-            try:
-                D11, nu12, E_rat, D66 = self.parameters[0:4]
-            except AttributeError:
-                raise RuntimeError('Cannot get E, G parameters from function '
-                                   'args or Problem attributes.')
-
-        nu21 = E_rat * nu12
-        E1 = D11 * 12 * (1 - nu12*nu21) / self.geometry.height**3
-        return E1, E1 / E_rat, nu12, D66 * 12.0 / self.geometry.height**3
-
-    def getPhysicalModuli(self, params: np.ndarray | jax.Array) -> tuple:
-        """
-        Wrapper around Problem.getEG and other similar functions that
-        automatically chooses the correct one depending in self.material.atype.
+        Get physical moduli from Ds.
+        For example, for isotropic material returns Young's modulus `E` and shear
+        modulus `G` from flexural rigidity `D` and Poisson's ratio `nu`.
 
         Parameters
         ----------
         params : np.ndarray | jax.Array
-            Parameters to be tranformed.
+            Parameters to be tranformed. If `None`, tries to uses parameters
+            stored in Problem object.
 
         Returns
         -------
@@ -730,14 +639,14 @@ class Problem:
             Tuple of float containing physical moduli for given material.
 
         """
-        if self.material.atype == 'isotropic':
-            return self.getEG(params[0], params[1])
+        if params is None:
+            try:
+                params = self.parameters
+            except AttributeError as err:
+                raise RuntimeError('Cannot get parameters from function '
+                                   'arguments or Problem attributes.') from err
 
-        elif self.material.atype == 'orthotropic':
-            return self.getOModuli(params[0], params[1], params[2], params[3])
-
-        else:
-            return NotImplementedError(f'Only {ATYPES.keys()} atypes are supported.')
+        return self.material.D_to_phys(self.geometry.height, *params)
 
     # def getLossAndDerivatives(
     #    self, params_to_physical, frequencies, reference_afc, batch_size=None
