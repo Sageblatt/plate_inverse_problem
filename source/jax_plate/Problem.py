@@ -18,6 +18,7 @@ from .Input import Compressor
 from .pyFFInterface import getOutput, evaluateMatrixAndRHS, processFFOutput
 from .Utils import get_source_dir
 from .Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
+from .Optimizers import optResult
 
 from jax.config import config
 config.update("jax_enable_x64", True)
@@ -378,7 +379,7 @@ class Problem:
                           case_name: str = '',
                           uid: str = None,
                           extra_info: str = '',
-                          **opt_kwargs):
+                          **opt_kwargs) -> optResult:
         """
         Solve the local inverse problem for given initial guess.
 
@@ -540,9 +541,14 @@ class Problem:
                 mod_str2 = (f'In physical moduli: {a2s(other_moduli)}\n'
                             f'With rel. error: {a2s(om_r_err2)}\n')
 
+            comp_str = ''
+            if compression[0]:
+                comp_str = f'Using compression algorithm {comp_alg} with '
+                f'{compression[1]} points.\n'
+
 
             rep_str = (f'{self.accelerometer}\n{self.material}\n{self.geometry}\n'
-                       + extra_info +
+                       + extra_info + comp_str +
                        f'Starting parameters: {a2s(x0)}.\n'
                        f'With relative error: {a2s(rel_err1)}.\n' +
                        mod_str1 +
@@ -553,7 +559,8 @@ class Problem:
                        mod_str2 +
                        f'Resulting loss: {result.f}.\n'
                        f'Optimization status: {result.status}.\n'
-                       f'Optimizer parameters: {opt_kwargs}\n')
+                       f'Optimizer parameters: {opt_kwargs}\n'
+                       f'Optimizer type: {optimizer}.')
             print(rep_str, end='')
 
             full_path = os.path.join(get_source_dir(), 'optimization',
