@@ -24,6 +24,17 @@ from jax.config import config
 config.update("jax_enable_x64", True)
 
 
+class StaticNdArrayWrapper(np.ndarray):
+    """
+    Hashable numpy.ndarray to be used as static argument in jax.jit.
+    """
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        return True
+
+
 class Problem:
     """
     Defines the geometry and those of the parameters that are known before the
@@ -210,24 +221,21 @@ class Problem:
         processed_ff_output = processFFOutput(getOutput(self.geometry.current_file))
 
         # Loading necessary data from model to GPU
-        self.Ks = jnp.array(processed_ff_output["Ks"], dtype=jnp.float64)
-        self.fKs = jnp.array(processed_ff_output["fKs"])
-        self.M = jnp.array(processed_ff_output["M"])
-        self.fM = jnp.array(processed_ff_output["fM"])
-        self.L = jnp.array(processed_ff_output["L"])
-        self.fL = jnp.array(processed_ff_output["fL"])
+        for name in ['Ks', 'fKs', 'M', 'fM', 'L', 'fL']:
+            setattr(self, name, np.array(processed_ff_output[name],
+                                         dtype=np.float64).view(StaticNdArrayWrapper))
 
         # Correction of the inertia matrices by the mass of the accelerometer
-        MCorrection = jnp.array(processed_ff_output["MCorrection"])
-        fMCorrection = jnp.array(processed_ff_output["fMCorrection"])
-        LCorrection = jnp.array(processed_ff_output["LCorrection"])
-        fLCorrection = jnp.array(processed_ff_output["fLCorrection"])
+        MCorrection = np.array(processed_ff_output["MCorrection"], dtype=np.float64).view(StaticNdArrayWrapper)
+        fMCorrection = np.array(processed_ff_output["fMCorrection"], dtype=np.float64).view(StaticNdArrayWrapper)
+        LCorrection = np.array(processed_ff_output["LCorrection"], dtype=np.float64).view(StaticNdArrayWrapper)
+        fLCorrection = np.array(processed_ff_output["fLCorrection"], dtype=np.float64).view(StaticNdArrayWrapper)
 
         # TODO load can be not in phase with the BC vibration
         # and both BC and load may have different phases in points
         # so both of them have to be complex in general
         # but it is too comlicated as for now
-        self.fLoad = jnp.array(processed_ff_output["fLoad"])
+        self.fLoad = np.array(processed_ff_output["fLoad"]).view(StaticNdArrayWrapper)
 
         # Total (regular + rotational) inertia
         self.MInertia = self.rho * (self.M + 1.0 / 3.0 * self.e ** 2 * self.L)
@@ -248,10 +256,10 @@ class Problem:
                 fMCorrection + 1.0 / 3.0 * self.e ** 2 * fLCorrection
             )
 
-        self.interpolation_vector = jnp.array(
+        self.interpolation_vector = np.array(
             processed_ff_output["interpolation_vector"]
-        )
-        self.interpolation_value_from_bc = jnp.float32(
+        ).view(StaticNdArrayWrapper)
+        self.interpolation_value_from_bc = np.float64(
             processed_ff_output["interpolation_value_from_bc"]
         )
         # TODO decide if we need to calculate in f64 in jax
@@ -275,32 +283,34 @@ class Problem:
             test point.
 
         """
-        def _solve(f, params):
+        def _solve(f, params, Ks, fKs, MInertia, fInertia, fLoad,
+                   interpolation_vector, interpolation_value_from_bc,
+                   transform):
             # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
-            e = self.e
+            # e = self.e
             # transform is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
             # theta is the set of parameters; for example see ParamTransforms.isotropic_to_full
-            D, beta = self.material.transform(params, omega)
+            D, beta = transform(params, omega)
             loss_moduli = beta * D
 
             # K_real = \sum K_ij*D_ij/(2.*e)
             # K_imag = \sum K_ij*D_ij/(2.*e)
             # Ks are matrices from eq (4.1.7)
-            K_real = jnp.einsum(self.Ks, [0, ...], D, [0]) / 2.0 / e
-            K_imag = jnp.einsum(self.Ks, [0, ...], loss_moduli, [0]) / 2.0 / e
+            K_real = jnp.einsum(Ks, [0, ...], D, [0])
+            K_imag = jnp.einsum(Ks, [0, ...], loss_moduli, [0])
 
             # f_imag = ..
             # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
-            fK_real = jnp.einsum(self.fKs, [0, ...], D, [0]) / 2.0 / e
-            fK_imag = jnp.einsum(self.fKs, [0, ...], loss_moduli, [0]) / 2.0 / e
+            fK_real = jnp.einsum(fKs, [0, ...], D, [0])
+            fK_imag = jnp.einsum(fKs, [0, ...], loss_moduli, [0])
 
             # Formulate system (A_real + i*A_imag)(u_real + i*u_imag) = (b_real + i*b_imag)
             # and create matrix from blocks for real solution
             # MInertia == rho*(M + 1/3 e^2 L) from
-            A_real = -(omega ** 2) * self.MInertia + K_real
+            A_real = -(omega ** 2) * MInertia + K_real
             A_imag = K_imag
-            b_real = -(omega ** 2) * self.fInertia + fK_real + self.fLoad / 2.0 / e
+            b_real = -(omega ** 2) * fInertia + fK_real + fLoad
             b_imag = fK_imag
 
             A = jnp.vstack(
@@ -312,14 +322,25 @@ class Problem:
 
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18
-            u_in_test_point = jnp.array([self.interpolation_value_from_bc, 0.0]) +\
-            self.interpolation_vector @ u.reshape(  # real, imag
+            u_in_test_point = jnp.array([interpolation_value_from_bc, 0.0]) +\
+            interpolation_vector @ u.reshape(  # real, imag
                 (-1, 2), order="F"
             )
 
             return u_in_test_point[0] + 1j * u_in_test_point[1]
 
         _get_afc = jax.jit(jax.vmap(_solve, in_axes=(0, None),))
+        _get_afc = jax.tree_util.Partial(_solve,
+                                         Ks=self.Ks / 2.0 / self.e,
+                                         fKs=self.fKs / 2.0 / self.e,
+                                         MInertia=self.MInertia,
+                                         fInertia=self.fInertia,
+                                         fLoad=self.fLoad / 2.0 / self.e,
+                                         interpolation_vector=self.interpolation_vector,
+                                         interpolation_value_from_bc=self.interpolation_value_from_bc,
+                                         transform=self.material.transform)
+
+        _get_afc = jax.vmap(_get_afc, in_axes=(0, None))
 
         if batch_size is None:
             return _get_afc
@@ -547,8 +568,8 @@ class Problem:
 
             comp_str = ''
             if compression[0]:
-                comp_str = f'Using compression algorithm {comp_alg} with '
-                f'{compression[1]} points.\n'
+                comp_str = (f'Using compression algorithm {comp_alg} with '
+                            f'{compression[1]} points.\n')
 
 
             rep_str = (f'{self.accelerometer}\n{self.material}\n{self.geometry}\n'
