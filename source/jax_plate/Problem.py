@@ -560,7 +560,7 @@ class Problem:
                        f'Resulting loss: {result.f}.\n'
                        f'Optimization status: {result.status}.\n'
                        f'Optimizer parameters: {opt_kwargs}\n'
-                       f'Optimizer type: {optimizer}.')
+                       f'Optimizer type: {optimizer}.\n')
             print(rep_str, end='')
 
             full_path = os.path.join(get_source_dir(), 'optimization',
