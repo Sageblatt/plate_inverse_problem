@@ -1,11 +1,14 @@
 import os
 import json
+import numpy as np
 from .Utils import get_jax_plate_dir
-from .ParamTransforms import isotropic, orthotropic
+from .ParamTransforms import isotropic, orthotropic, orthotropic_d4
 
 
 ATYPES = {'isotropic': ['E', 'G', 'beta'],
-          'orthotropic': ['E1', 'E2', 'G12', 'nu12', 'beta']}
+          'orthotropic': ['E1', 'E2', 'G12', 'nu12', 'beta'],
+          'orthotropic_d4': ['E1', 'E2', 'G12', 'nu12',
+                             'b1', 'b2', 'b3', 'b4']}
 
 
 class MaterialParams:
@@ -119,13 +122,56 @@ class Material:
                 E1 = D11 * 12 * (1 - nu12 * nu21) / h ** 3
                 return E1, E1 / E_rat, nu12, D66 * 12.0 / h ** 3
 
-
             self.phys_to_D = get_Ds
             self.D_to_phys = get_physical
 
             def get_params(h: float):
                 return (*self.phys_to_D(h, self.E1, self.E2, self.G12, self.nu12),
                         self.beta)
+
+            self.get_params = get_params
+
+        elif self.atype == 'orthotropic_d4':
+            self.transform = orthotropic_d4
+
+            def get_Ds(h: float, E1: float, E2: float, G12: float,
+                       nu12: float, b1: float, b2: float,
+                       b3: float, b4: float) -> tuple:
+                E1 *= (1 + 1j * b1)
+                E2 *= (1 + 1j * b2)
+                G12 *= (1 + 1j * b3)
+                nu12 *= (1 + 1j * b4)
+
+                nu21 = E1 / E2 * nu12
+                D11 = E1 * h ** 3 / (12 * (1 - nu12 * nu21))
+                D66 = G12 * h ** 3 / 12
+
+                Ds = np.array([D11, nu12, E1 / E2, D66])
+                re_Ds = np.real(Ds)
+                new_betas = np.tan(np.angle(Ds))
+                return (*re_Ds, *new_betas)
+
+            def get_physical(h: float, D11: float, nu12: float, E_rat: float,
+                             D66: float, b1: float, b2: float,
+                             b3: float, b4: float) -> tuple:
+                D11 *= (1 + 1j * b1)
+                nu12 *= (1 + 1j * b2)
+                E_rat *= (1 + 1j * b3)
+                D66 *= (1 + 1j * b4)
+
+                nu21 = E_rat * nu12
+                E1 = D11 * 12 * (1 - nu12 * nu21) / h ** 3
+                phys = np.array([E1, E1 / E_rat, nu12, D66 * 12.0 / h ** 3])
+                re_phys = np.real(phys)
+                new_betas = np.tan(np.angle(phys))
+                return (*re_phys, *new_betas)
+
+            self.phys_to_D = get_Ds
+            self.D_to_phys = get_physical
+
+            def get_params(h: float):
+                return self.phys_to_D(h, self.E1, self.E2, self.G12, self.nu12,
+                                      self.b1, self.b2, self.b3, self.b4)
 
             self.get_params = get_params
 

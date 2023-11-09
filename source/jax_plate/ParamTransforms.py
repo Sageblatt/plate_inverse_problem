@@ -92,6 +92,24 @@ def orthotropic(orthotropic_params, *args):
 
     return Ds, betas
 
+def orthotropic_d4(params, *args):
+    b1 = params[4] # beta for D11
+    b2 = params[5] # beta for nu12
+    b3 = params[6] # beta for E_ratio
+    b4 = params[7] # beta for D66
+
+    D_11 = params[0] * (1 + 1j * b1)
+    nu_12 = params[1] * (1 + 1j * b2)
+    E_ratio = params[2] * (1 + 1j * b3)
+    D_66 = params[3] * (1 + 1j * b4)
+
+    nu_21 = E_ratio*nu_12
+    D_12 = nu_21*D_11
+    D_22 = D_11/E_ratio
+
+    Ds = jnp.array([D_11, D_12, 0.0, D_22, 0.0, D_66])
+    return jnp.real(Ds), jnp.tan(jnp.angle(Ds))
+
 def four_parameter_fd_isotropic(params, omega):
 
     D0 = params[0]
