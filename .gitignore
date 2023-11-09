@@ -12,3 +12,8 @@ source/optimization/
 source/setups/
 
 source/jax_plate/materials/
+source/jax_plate/geometry/
+
+source/jax_plate.egg-info/
+
+source/sync.sh

@@ -1,6 +1,7 @@
 import os
 import numpy as np
 import matplotlib.pyplot as plt
+import matplotlib
 
 def plot_fr_radial(freqs, fr, fig, axs, **line_kwargs):
     """Plots given frequency response on given frequency range as two subplots:
@@ -65,3 +66,6 @@ def get_jax_plate_dir():
 def get_source_dir():
     """Returns an absolute path to a source folder, where jax_plate dir is located."""
     return os.path.split(get_jax_plate_dir())[0]
+
+def png_matrix(M, fpath):
+    matplotlib.image.imsave(fpath, M, cmap='Paired')
