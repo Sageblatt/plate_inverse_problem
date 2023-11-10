@@ -339,7 +339,6 @@ class Problem:
             A = sparse_vstack(
                 (sparse_hstack((A_real, -A_imag)), sparse_hstack((-A_imag, -A_real)))
             )
-            b = jnp.concatenate((b_real, -b_imag))
             b = sparse_concatenate((b_real, -b_imag)).todense()
 
             ## Dense solver
@@ -358,7 +357,6 @@ class Problem:
             return u_in_test_point[0] + 1j * u_in_test_point[1]
 
         _get_afc = jax.jit(jax.vmap(_solve, in_axes=(0, None),))
-        _get_afc = jax.tree_util.Partial(_solve,
         _solve_p = jax.tree_util.Partial(_solve,
                                          Ks=self.Ks / 2.0 / self.e,
                                          fKs=self.fKs / 2.0 / self.e,
