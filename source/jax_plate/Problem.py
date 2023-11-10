@@ -299,7 +299,6 @@ class Problem:
         sparse_concatenate = sparse.sparsify(jnp.concatenate)
         sparse_vstack = sparse.sparsify(jnp.vstack)
         sparse_hstack = sparse.sparsify(jnp.hstack)
-        sparse_diag = sparse.sparsify(jnp.diag)
 
         def _solve(f, params, Ks, fKs, MInertia, fInertia, fLoad,
                    interpolation_vector, interpolation_value_from_bc,
@@ -356,7 +355,7 @@ class Problem:
 
             return u_in_test_point[0] + 1j * u_in_test_point[1]
 
-        _get_afc = jax.jit(jax.vmap(_solve, in_axes=(0, None),))
+
         _solve_p = jax.tree_util.Partial(_solve,
                                          Ks=self.Ks / 2.0 / self.e,
                                          fKs=self.fKs / 2.0 / self.e,
