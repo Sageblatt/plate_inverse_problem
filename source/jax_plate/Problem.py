@@ -135,8 +135,12 @@ class Problem:
             if accel is not None:
                 self.accelerometer = accel
 
+            # Override geometry if explicit argument is given
+            if geometry is not None:
+                self.geometry = geometry
+
             # Try to read geometry from setup.json
-            if 'geometry' in setup_params:
+            elif 'geometry' in setup_params:
                 if 'template' in setup_params['geometry']:
                     templ = setup_params['geometry']['template']
                     del setup_params['geometry']['template']
@@ -148,6 +152,9 @@ class Problem:
                 elif 'edp' in setup_params['geometry']:
                     edp_file = setup_params['geometry']['edp']
                     del setup_params['geometry']['edp']
+
+                    if not os.path.isabs(edp_file):
+                        edp_file = os.path.join(spath, edp_file)
 
                     if 'length' in setup_params['geometry']:
                         self.geometry = Geometry(edp_file,
@@ -163,9 +170,6 @@ class Problem:
                                      f'{setup_fpath} should contain `template` '
                                      'or `edp` keyword inside `geometry`.')
 
-            # Override geometry if explicit argument is given
-            if geometry is not None:
-                self.geometry = geometry
 
             # Try to load reference frequency response if possible
             freq_file = os.path.join(spath, 'freqs.npy')
