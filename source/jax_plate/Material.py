@@ -1,14 +1,20 @@
 import os
 import json
 import numpy as np
+
+from jax.tree_util import Partial
+
 from .Utils import get_jax_plate_dir
-from .ParamTransforms import isotropic, orthotropic, orthotropic_d4
+from .ParamTransforms import isotropic, orthotropic, orthotropic_d4, orthotropic_lam
 
 
 ATYPES = {'isotropic': ['E', 'G', 'beta'],
           'orthotropic': ['E1', 'E2', 'G12', 'nu12', 'beta'],
           'orthotropic_d4': ['E1', 'E2', 'G12', 'nu12',
-                             'b1', 'b2', 'b3', 'b4']}
+                             'b1', 'b2', 'b3', 'b4'],
+          'orth_lam_simple': ['E1', 'E2', 'G12', 'nu12', 'beta', # simple orthotropic laminate with identical unidirectional layers
+                              'angles'] # tuple of angles for each lamina
+          }
 
 
 class MaterialParams:
@@ -175,6 +181,60 @@ class Material:
 
             self.get_params = get_params
 
+        elif self.atype == 'orth_lam_simple':
+            self.transform = orthotropic_lam
+
+            angs = np.array(self.angles, dtype=np.float64) * np.pi / 180
+
+            def get_Ds(h: float, E1: float, E2: float, G12: float,
+                       nu12: float) -> tuple[float, float, float, float]:
+                nu21 = E1 / E2 * nu12
+                Q = np.zeros((3, 3))
+                Q[0, 0] = E1 / (1 - nu12 * nu21)
+                Q[1, 1] = E2 / (1 - nu12 * nu21)
+                Q[0, 1] = Q[1, 0] = nu12 * E2 / (1 - nu12 * nu21)
+                Q[2, 2] = G12
+
+                T = np.zeros((angs.size, 3, 3))
+                Q_ = np.zeros((angs.size, 3, 3))
+
+                for i in range(angs.size):
+                    m = np.cos(angs[i])
+                    n = np.sin(angs[i])
+                    mn = m*n
+                    T[i] = np.array([[m**2, n**2,       -2*mn],
+                                     [n**2, m**2,        2*mn],
+                                     [  mn,  -mn, m**2 - n**2]])
+
+                    T_ = np.linalg.inv(T[i]) # TODO: calculate inverse manually with sympy
+
+                    Q_[i] = T_ @ Q @ T_.T
+
+                D = np.zeros((3, 3))
+                z = np.linspace(-h/2, h/2, angs.size + 1) ** 3
+                zd = np.diff(z)
+
+                for k in range(angs.size):
+                    D += Q_[k] * zd[k]
+
+                D /= 3
+
+                return D[0, 0], D[0, 1], D[0, 2], D[1, 1], D[1, 2], D[2, 2]
+
+            def get_physical(h: float, D11: float, D12: float, D22: float,
+                             D66: float, *args) -> tuple[float, float, float, float]: # TODO: implement inverse
+                # return D11, D12, D22, D66
+                raise NotImplementedError()
+
+            self.phys_to_D = get_Ds
+            self.D_to_phys = get_physical
+
+            def get_params(h: float):
+                return (*self.phys_to_D(h, self.E1, self.E2, self.G12, self.nu12),
+                        self.beta)
+
+            self.get_params = get_params
+
     @staticmethod
     def create_material(params: MaterialParams, material_name: str) -> None:
         """
@@ -193,7 +253,6 @@ class Material:
         None
 
         """
-        mat = Material(params)
         materials_folder = os.path.join(get_jax_plate_dir(), 'materials')
 
         if not os.path.exists(materials_folder):
@@ -206,7 +265,7 @@ class Material:
         fpath = os.path.join(materials_folder, material_name + '.json')
 
         with open(fpath, 'w') as file:
-            json.dump(mat.__dict__, file, indent=4)
+            json.dump(params.__dict__, file, indent=4)
 
         return
 

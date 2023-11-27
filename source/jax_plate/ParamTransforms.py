@@ -128,6 +128,20 @@ def four_parameter_fd_isotropic(params, omega):
 
     return Ds, betas
 
+def orthotropic_lam(orthotropic_params, *args):
+    # D_11 = orthotropic_params[0]
+    # D_12 = orthotropic_params[1]
+    # D_16 = orthotropic_params[2]
+    # D_22 = orthotropic_params[3]
+    # D_26 = orthotropic_params[4]
+    # D_66 = orthotropic_params[5]
+    beta = orthotropic_params[6]
+
+    Ds = jnp.array(orthotropic_params[:6]) # [11, 12, 16, 22, 26, 66]
+    betas = jnp.full_like(Ds, beta)
+
+    return Ds, betas
+
 #def orthotropic_four_parameter_fd(params, omega):
 #    D_11 = params[0] # D_11 = E_1 h**3/12(1 - nu_12*nu_21)
 #    nu_12 = params[1]
