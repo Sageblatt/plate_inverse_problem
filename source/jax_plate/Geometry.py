@@ -109,7 +109,7 @@ class Geometry:
                     raise ValueError('`x` coordinate of the accelerometer'
                                      'should not be None for the template'
                                      f'{TEMPLATES[2]}.')
-                params.accel_y = params.width/2
+                params.accel_y = 0
 
         elif os.path.exists(edp_or_template):
             self.current_file = Geometry._create_temp_file(edp_or_template)
@@ -201,9 +201,9 @@ class Geometry:
                                             f'real {kwords[key]} = {attr:.5e};',
                                             data, count=1)
                     if count == 0:
-                        raise RuntimeError(f'Could not replace {kwords[key]}'
+                        raise RuntimeError(f'Could not replace {kwords[key]} '
                                            f'parameter in .edp file '
-                                           '{self.current_file} with given '
+                                           f'{self.current_file} with given '
                                            f'value {attr:.5e} as it was not '
                                            'found in the original script.')
 

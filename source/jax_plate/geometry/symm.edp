@@ -8,9 +8,10 @@ real Lx = 100*1e-3; // Lenghts of the long and short sides of the plate, [m]
 real Ly = 20*1e-3;
 real rAccel = 4e-3; // Radius of the accelerometer [m]
 real offsetAccelX = 5e-3; // Positions of the center of the accelerometer
+real offsetAccelY = 5e-3; // Positions of the center of the accelerometer
 // Test point for AFC measurment
 real xtest = offsetAccelX;
-real ytest = 0;
+real ytest = offsetAccelY; // Should be 0 !!!!!
 real eps = 1e-8;
 
 // These parameters control the mesh coarsity
