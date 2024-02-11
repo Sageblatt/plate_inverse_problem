@@ -97,6 +97,7 @@ def spsolve(data, indices, indptr, b, permc_spec='COLAMD', use_umfpack=True):
   return _spsolve_p.bind(data, indices, indptr, b, permc_spec=permc_spec, use_umfpack=use_umfpack)
 
 
+# TODO: try pushing loops down to the callback
 def _spsolve_batch(vals, axes, **kwargs):
     Ad, Ai, Ap, b = vals
     aAd, aAi, aAp, ab = axes
@@ -106,8 +107,10 @@ def _spsolve_batch(vals, axes, **kwargs):
 
     if aAd is None and ab is not None:
         b = jnp.moveaxis(b, ab, 0)
-        for i in range(0, b.shape[0]):
-            res = res.at[i, :].set(spsolve(Ad, Ai, Ap, b[i, :], **kwargs))
+        def loop_func(i, val):
+            return val.at[i, :].set(spsolve(Ad, Ai, Ap, b[i, :], **kwargs))
+
+        res = jax.lax.fori_loop(0, b.shape[0], loop_func, res)
 
     elif aAd is not None and ab is not None and aAi is None:
         assert aAi is None, 'Batched arrays should have the same structure'
@@ -118,13 +121,60 @@ def _spsolve_batch(vals, axes, **kwargs):
         Ad = jnp.moveaxis(Ad, aAd, 0)
         b = jnp.moveaxis(b, ab, 0)
 
-        for i in range(0, Ad.shape[0]):
-            # TODO: use the fact that the sparsity pattern should be the same
-            # And maybe this loop can be vectorized across CPU cores
-            res = res.at[i, :].set(spsolve(Ad[i, :], Ai, Ap, b[i, :], **kwargs))
+        # TODO: use the fact that the sparsity pattern should be the same
+        # And maybe this loop can be vectorized across CPU cores
+        def loop_func(i, val):
+            return val.at[i, :].set(spsolve(Ad[i, :], Ai, Ap, b[i, :], **kwargs))
+
+        res = jax.lax.fori_loop(0, Ad.shape[0], loop_func, res)
+
     else:
         raise NotImplementedError('Matrices with different indices and indptrs')
 
     return res, 0
 
 batching.primitive_batchers[_spsolve_p] = _spsolve_batch
+
+# jax.hessian needs batching rule for csr_matvec primitive
+def _csr_matvec_batch(vals, axes, **kwargs):
+    Ad, Ai, Ap, v = vals
+    aAd, aAi, aAp, av = axes
+    res = jnp.zeros_like(v)
+
+    assert v.ndim < 3, 'Only one batch dimension is supported'
+
+    if aAd is None and av is not None:
+        v = jnp.moveaxis(v, av, 0)
+        def loop_func(i, val):
+            return val.at[i, :].set(sparse.csr_matvec_p.bind(Ad, Ai, Ap, v[i, :], **kwargs))
+
+        res = jax.lax.fori_loop(0, v.shape[0], loop_func, res)
+
+    elif aAd is not None and av is not None and aAi is None and aAp is None:
+        assert Ad.shape[aAd] == v.shape[av]
+
+        Ad = jnp.moveaxis(Ad, aAd, 0)
+        v = jnp.moveaxis(v, av, 0)
+
+        # TODO: use the fact that the sparsity pattern should be the same
+        # And maybe this loop can be vectorized across CPU cores
+        def loop_func(i, val):
+            return val.at[i, :].set(sparse.csr_matvec_p.bind(Ad[i, :], Ai, Ap, v[i, :], **kwargs))
+
+        res = jax.lax.fori_loop(0, Ad.shape[0], loop_func, res)
+
+    elif aAd is not None and aAi is None and aAp is None and av is None:
+        Ad = jnp.moveaxis(Ad, aAd, 0)
+        res = jnp.zeros((Ad.shape[0], v.shape[0]), dtype=v.dtype)
+        def loop_func(i, val):
+            return val.at[i, :].set(sparse.csr_matvec_p.bind(Ad[i, :], Ai, Ap, v, **kwargs))
+
+        res = jax.lax.fori_loop(0, Ad.shape[0], loop_func, res)
+
+    else:
+        raise NotImplementedError('Matrices with different indices and indptrs : '
+                                  f'{axes=}')
+
+    return res, 0
+
+batching.primitive_batchers[jax.experimental.sparse.csr.csr_matvec_p] = _csr_matvec_batch

@@ -75,9 +75,13 @@ def solve_trust_region_model(B, g, delta, rtol=1e-6, max_iter=100):
 
 
 def get_model_newt(f):
-    f_value_and_gradient = jax.jit(jax.value_and_grad(f))
-    f_hessian = jax.jit(jax.hessian(f))
+    gr = jax.grad(f)
 
+    def val_gr(x):
+        return f(x), gr(x)
+
+    f_value_and_gradient = jax.jit(val_gr)
+    f_hessian = jax.jit(jax.jacobian(gr))
     def _update(x):
         return (*f_value_and_gradient(x), f_hessian(x))
 
