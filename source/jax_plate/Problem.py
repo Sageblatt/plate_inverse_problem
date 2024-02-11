@@ -288,22 +288,10 @@ class Problem:
             test point.
 
         """
-        # TODO: check if this is better, than converting D and loss_moduli to bcoo
-        # before einsum
-        # def _einsum_dense_rhs(lhs, rhs, n_se):
-        #     return sparse.bcoo_fromdense(
-        #         sparse.bcoo_dot_general(lhs,
-        #                                 rhs,
-        #                                 dimension_numbers=(([0], [0]), ([], []))),
-        #                                 nse=n_se)
-        # sparse_einsum = _einsum_dense_rhs
+        def sparse_einsum(lhs, rhs):
+            return (lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2] +
+                   lhs[3] * rhs[3] + lhs[4] * rhs[4] + lhs[5] * rhs[5])
 
-        def _sp_einsum(lhs, rhs, n_se):
-            return sparse.bcoo_dot_general(lhs,
-                                           rhs,
-                                           dimension_numbers=(([0], [0]), ([], [])))
-
-        sparse_einsum = _sp_einsum
         sparse_concatenate = sparse.sparsify(jnp.concatenate)
         sparse_vstack = sparse.sparsify(jnp.vstack)
         sparse_hstack = sparse.sparsify(jnp.hstack)
@@ -313,26 +301,23 @@ class Problem:
                    transform, ks_nse, fks_nse):
             # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
-            # e = self.e
+
             # transform is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
             # theta is the set of parameters; for example see ParamTransforms.isotropic_to_full
             D, beta = transform(params, omega)
             loss_moduli = beta * D
 
-            D = sparse.bcoo_fromdense(D, nse=D.size)
-            loss_moduli = sparse.bcoo_fromdense(loss_moduli, nse=loss_moduli.size)
 
             # K_real = \sum K_ij*D_ij/(2.*e)
             # K_imag = \sum K_ij*D_ij/(2.*e)
             # Ks are matrices from eq (4.1.7)
-
-            K_real = sparse_einsum(Ks, D, ks_nse)
-            K_imag = sparse_einsum(Ks, loss_moduli, ks_nse)
+            K_real = sparse_einsum(Ks, D)
+            K_imag = sparse_einsum(Ks, loss_moduli)
 
             # f_imag = ..
             # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
-            fK_real = sparse_einsum(fKs, D, fks_nse)
-            fK_imag = sparse_einsum(fKs, loss_moduli, fks_nse)
+            fK_real = sparse_einsum(fKs, D)
+            fK_imag = sparse_einsum(fKs, loss_moduli)
 
             # Formulate system (A_real + i*A_imag)(u_real + i*u_imag) = (b_real + i*b_imag)
             # and create matrix from blocks for real solution
