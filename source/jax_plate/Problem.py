@@ -20,6 +20,7 @@ from .pyFFInterface import getOutput, evaluateMatrixAndRHS, processFFOutput
 from .Utils import get_source_dir
 from .Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 from .Optimizers import optResult
+from .Sparse import spsolve
 
 from jax.config import config
 config.update("jax_enable_x64", True)
@@ -287,15 +288,22 @@ class Problem:
             test point.
 
         """
-        def _einsum(lhs, rhs, n_se):
-            return sparse.bcoo_fromdense(
-                sparse.bcoo_dot_general(lhs,
-                                        rhs,
-                                        dimension_numbers=(([0], [0]), ([], []))),
-                nse=n_se)
+        # TODO: check if this is better, than converting D and loss_moduli to bcoo
+        # before einsum
+        # def _einsum_dense_rhs(lhs, rhs, n_se):
+        #     return sparse.bcoo_fromdense(
+        #         sparse.bcoo_dot_general(lhs,
+        #                                 rhs,
+        #                                 dimension_numbers=(([0], [0]), ([], []))),
+        #                                 nse=n_se)
+        # sparse_einsum = _einsum_dense_rhs
 
-        # sparse_einsum = sparse.sparsify(_einsum)
-        sparse_einsum = _einsum
+        def _sp_einsum(lhs, rhs, n_se):
+            return sparse.bcoo_dot_general(lhs,
+                                           rhs,
+                                           dimension_numbers=(([0], [0]), ([], [])))
+
+        sparse_einsum = _sp_einsum
         sparse_concatenate = sparse.sparsify(jnp.concatenate)
         sparse_vstack = sparse.sparsify(jnp.vstack)
         sparse_hstack = sparse.sparsify(jnp.hstack)
@@ -311,19 +319,18 @@ class Problem:
             D, beta = transform(params, omega)
             loss_moduli = beta * D
 
+            D = sparse.bcoo_fromdense(D, nse=D.size)
+            loss_moduli = sparse.bcoo_fromdense(loss_moduli, nse=loss_moduli.size)
+
             # K_real = \sum K_ij*D_ij/(2.*e)
             # K_imag = \sum K_ij*D_ij/(2.*e)
             # Ks are matrices from eq (4.1.7)
-            # K_real = sparse.bcoo_dot_general(Ks, D, dimension_numbers=(([0], [0]), ([], [])))
-            # K_imag = sparse.bcoo_dot_general(Ks, loss_moduli, dimension_numbers=(([0], [0]), ([], [])))
 
             K_real = sparse_einsum(Ks, D, ks_nse)
             K_imag = sparse_einsum(Ks, loss_moduli, ks_nse)
 
             # f_imag = ..
             # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
-            # fK_real = sparse.bcoo_dot_general(fKs, D, dimension_numbers=(([0], [0]), ([], [])))
-            # fK_imag = sparse.bcoo_dot_general(fKs, loss_moduli, dimension_numbers=(([0], [0]), ([], [])))
             fK_real = sparse_einsum(fKs, D, fks_nse)
             fK_imag = sparse_einsum(fKs, loss_moduli, fks_nse)
 
@@ -340,12 +347,9 @@ class Problem:
             )
             b = sparse_concatenate((b_real, -b_imag)).todense()
 
-            ## Dense solver
-            A = A.todense()
-            u = jsp.linalg.solve(A, b, check_finite=False)
+            A = sparse.BCSR.from_bcoo(A)
+            u = spsolve(A.data, A.indices, A.indptr, b)
 
-            # A_op = lambda x: A @ x
-            # u = jsp.sparse.linalg.bicgstab(A_op, b, maxiter=500)[0]
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18
             u_in_test_point = jnp.array([interpolation_value_from_bc, 0.0]) +\
@@ -368,7 +372,7 @@ class Problem:
                                          ks_nse=self.Ks_nse,
                                          fks_nse=self.fKs_nse)
 
-        _get_afc = jax.vmap(_solve_p, in_axes=(0, None))
+        _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
 
         if batch_size is None:
             return _get_afc
