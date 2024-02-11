@@ -222,7 +222,7 @@ class Geometry:
                     setattr(self, key, value)
 
             if export_vtk:
-                (data, count) = re.subn('//savevtk\(".*"',
+                (data, count) = re.subn(r'//savevtk\(".*"',
                                         'savevtk("export.vtu"',
                                         data, count=1)
                 if count == 0:
