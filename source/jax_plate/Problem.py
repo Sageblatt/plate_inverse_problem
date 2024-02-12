@@ -6,8 +6,7 @@ from time import perf_counter, gmtime, strftime
 
 import jax
 import jax.numpy as jnp
-import jax.scipy as jsp
-import jax.experimental.sparse as sparse # TODO: implement sparse
+import jax.experimental.sparse as sparse
 import numpy as np
 import numpy.typing as npt
 
@@ -16,7 +15,7 @@ from .Material import Material, MaterialParams
 from .Geometry import Geometry, GeometryParams
 
 from .Input import Compressor
-from .pyFFInterface import getOutput, evaluateMatrixAndRHS, processFFOutput
+from .pyFFInterface import getOutput, processFFOutput
 from .Utils import get_source_dir
 from .Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 from .Optimizers import optResult
@@ -222,25 +221,41 @@ class Problem:
 
         processed_ff_output = processFFOutput(getOutput(self.geometry.current_file))
 
-        # Loading necessary data from model to GPU
-        for name in ['Ks', 'fKs', 'M', 'fM', 'L', 'fL']:
-            # setattr(self, name, np.array(processed_ff_output[name]))
-            setattr(self, name, sparse.bcoo_fromdense(processed_ff_output[name]))
+        m_names = ['M', 'L', "MCorrection", "LCorrection"]
+        matrices = []
 
-        self.Ks_nse = (np.sum(np.abs(processed_ff_output['Ks']), axis=0) > 0).sum()
-        self.fKs_nse = (np.sum(np.abs(processed_ff_output['fKs']), axis=0) > 0).sum()
+        for name in m_names:
+            matrices.append(processed_ff_output[name])
 
-        # Correction of the inertia matrices by the mass of the accelerometer
-        MCorrection = sparse.bcoo_fromdense(processed_ff_output["MCorrection"])
-        fMCorrection = sparse.bcoo_fromdense(processed_ff_output["fMCorrection"])
-        LCorrection = sparse.bcoo_fromdense(processed_ff_output["LCorrection"],)
-        fLCorrection = sparse.bcoo_fromdense(processed_ff_output["fLCorrection"])
+        _mats = np.array(matrices)
+
+        _Ks = np.array(processed_ff_output['Ks'], dtype=np.float64)
+
+        nz_mask = (np.sum(np.abs(_Ks), axis=0) + np.sum(np.abs(_mats), axis=0)).nonzero()
+
+        self.M = _mats[0][nz_mask]
+        self.L = _mats[1][nz_mask]
+        MCorrection = _mats[2][nz_mask]
+        LCorrection = _mats[3][nz_mask]
+        self.Ks = np.zeros((6, self.M.size))
+
+        for i in range(0, 6):
+            self.Ks[i] = _Ks[i][nz_mask]
+
+        v_names = ['fKs', 'fM', 'fL']
+        for name in v_names:
+            setattr(self, name, np.array(processed_ff_output[name],
+                                         dtype=np.float64).view(StaticNdArrayWrapper))
+
+        fMCorrection = np.array(processed_ff_output["fMCorrection"], dtype=np.float64)
+        fLCorrection = np.array(processed_ff_output["fLCorrection"], dtype=np.float64)
 
         # TODO load can be not in phase with the BC vibration
         # and both BC and load may have different phases in points
         # so both of them have to be complex in general
         # but it is too comlicated as for now
-        self.fLoad = sparse.bcoo_fromdense(processed_ff_output["fLoad"])
+        self.fLoad = np.array(processed_ff_output["fLoad"],
+                              dtype=np.float64).view(StaticNdArrayWrapper)
 
         # Total (regular + rotational) inertia
         self.MInertia = self.rho * (self.M + 1.0 / 3.0 * self.e ** 2 * self.L)
@@ -261,15 +276,21 @@ class Problem:
                 fMCorrection + 1.0 / 3.0 * self.e ** 2 * fLCorrection
             )
 
-        self.interpolation_vector = sparse.bcoo_fromdense(
-            processed_ff_output["interpolation_vector"]
-        )
-        self.interpolation_value_from_bc = np.float64(
-            processed_ff_output["interpolation_value_from_bc"]
-        )
-        # TODO decide if we need to calculate in f64 in jax
+        self.interpolation_vector = np.array(processed_ff_output["interpolation_vector"],
+                                             dtype=np.float64)
+        self.interpolation_value_from_bc = np.float64(processed_ff_output["interpolation_value_from_bc"])
+
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
+
+        sz = self.fM.size
+        rs, cs = nz_mask
+
+        rows = np.concatenate((rs, rs, rs + sz, rs + sz))
+        cols = np.concatenate((cs, cs + sz, cs, cs + sz))
+
+        self.indices = np.vstack((rows, cols), dtype=np.int32).T
+
 
     def getFRFunction(self, batch_size: int = None):
         """
@@ -288,17 +309,9 @@ class Problem:
             test point.
 
         """
-        def sparse_einsum(lhs, rhs):
-            return (lhs[0] * rhs[0] + lhs[1] * rhs[1] + lhs[2] * rhs[2] +
-                   lhs[3] * rhs[3] + lhs[4] * rhs[4] + lhs[5] * rhs[5])
-
-        sparse_concatenate = sparse.sparsify(jnp.concatenate)
-        sparse_vstack = sparse.sparsify(jnp.vstack)
-        sparse_hstack = sparse.sparsify(jnp.hstack)
-
         def _solve(f, params, Ks, fKs, MInertia, fInertia, fLoad,
                    interpolation_vector, interpolation_value_from_bc,
-                   transform, ks_nse, fks_nse):
+                   transform, indx):
             # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
 
@@ -307,17 +320,16 @@ class Problem:
             D, beta = transform(params, omega)
             loss_moduli = beta * D
 
-
             # K_real = \sum K_ij*D_ij/(2.*e)
             # K_imag = \sum K_ij*D_ij/(2.*e)
             # Ks are matrices from eq (4.1.7)
-            K_real = sparse_einsum(Ks, D)
-            K_imag = sparse_einsum(Ks, loss_moduli)
+            K_real = jnp.einsum(Ks, [0, ...], D, [0])
+            K_imag = jnp.einsum(Ks, [0, ...], loss_moduli, [0])
 
             # f_imag = ..
             # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
-            fK_real = sparse_einsum(fKs, D)
-            fK_imag = sparse_einsum(fKs, loss_moduli)
+            fK_real = jnp.einsum(fKs, [0, ...], D, [0])
+            fK_imag = jnp.einsum(fKs, [0, ...], loss_moduli, [0])
 
             # Formulate system (A_real + i*A_imag)(u_real + i*u_imag) = (b_real + i*b_imag)
             # and create matrix from blocks for real solution
@@ -327,11 +339,13 @@ class Problem:
             b_real = -(omega ** 2) * fInertia + fK_real + fLoad
             b_imag = fK_imag
 
-            A = sparse_vstack(
-                (sparse_hstack((A_real, -A_imag)), sparse_hstack((-A_imag, -A_real)))
-            )
-            b = sparse_concatenate((b_real, -b_imag)).todense()
+            # A = vstack(
+            #     (hstack((A_real, -A_imag)), hstack((-A_imag, -A_real)))
+            # )
+            data = jnp.concatenate((A_real, -A_imag, -A_imag, -A_real))
+            b = jnp.concatenate((b_real, -b_imag))
 
+            A = sparse.BCOO((data, indx), shape=(b.size, b.size))
             A = sparse.BCSR.from_bcoo(A)
             u = spsolve(A.data, A.indices, A.indptr, b)
 
@@ -354,8 +368,7 @@ class Problem:
                                          interpolation_vector=self.interpolation_vector,
                                          interpolation_value_from_bc=self.interpolation_value_from_bc,
                                          transform=self.material.transform,
-                                         ks_nse=self.Ks_nse,
-                                         fks_nse=self.fKs_nse)
+                                         indx=self.indices)
 
         _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
 
