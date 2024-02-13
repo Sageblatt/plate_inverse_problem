@@ -15,31 +15,61 @@ from scipy.sparse import csr_matrix, linalg
 # Ensure that jax uses CPU
 jax.config.update('jax_platform_name', 'cpu')
 
+# Batching _mode`s:
+# 0 - no vectorization
+# 1 - data is vectorized
+# 2 - b is vectorized
+# 3 - data and b are vectorized
+# 4 - data and b are vectorized, b has 2 batch dims # needed for jax.hessian
 
-def _spsolve_abstract_eval(data, indices, indptr, b, *, permc_spec, use_umfpack):
+def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, _mode):
   if data.dtype != b.dtype:
     raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
-  if not (jnp.issubdtype(indices.dtype, jnp.integer) and jnp.issubdtype(indptr.dtype, jnp.integer)):
-    raise ValueError(f"index arrays must be integer typed; got {indices.dtype=} {indptr.dtype=}")
-  if not data.ndim == indices.ndim == indptr.ndim == b.ndim == 1:
-    raise ValueError("Arrays must be one-dimensional. "
-                     f"Got {data.shape=} {indices.shape=} {indptr.shape=} {b.shape=}")
-  if indptr.size != b.size + 1 or  data.shape != indices.shape:
-    raise ValueError(f"Invalid CSR buffer sizes: {data.shape=} {indices.shape=} {indptr.shape=}")
+  if not (jnp.issubdtype(indices.dtype, jnp.integer)):
+    raise ValueError(f"index arrays must be integer typed; got {indices.dtype=}")
   if permc_spec not in ['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']:
     raise ValueError(f"{permc_spec=} not valid, must be one of "
                      "['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']")
   use_umfpack = bool(use_umfpack)
-  return b
+  if not type(_mode) == int:
+      raise ValueError('invalid type of `_mode` argument, expected `int`, got '
+                       f'{type(_mode)}')
+  if _mode in (0, 2, 3, 4):
+      return b
+  elif _mode == 1:
+      return core.ShapedArray((data.shape[0], b.shape[0]), b.dtype)
+  else: # should't reach there as handling is dine in _spsolve_batch
+      raise NotImplementedError()
 
 
-def _spsolve_cpu_lowering(ctx, data, indices, indptr, b, permc_spec, use_umfpack):
-  args = [data, indices, indptr, b]
+def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, _mode):
+  args = [data, indices, b]
 
-  def _callback(data, indices, indptr, b, **kwargs):
-    A = csr_matrix((data, indices, indptr), shape=(b.size, b.size), copy=True) # TODO: maybe we can avoid copying
-    A.eliminate_zeros()
-    return (linalg.spsolve(A, b, permc_spec=permc_spec, use_umfpack=use_umfpack).astype(b.dtype),)
+  def _callback(data, indices, b, **kwargs):
+    if _mode in (0, 2):
+        pass
+    elif _mode == 3:
+        res = np.zeros_like(b)
+        for i in range(b.shape[0]):
+            A = csr_matrix((data[i, :], indices.T),
+                           shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
+            A.eliminate_zeros()
+            res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
+                                       use_umfpack=use_umfpack).astype(b.dtype)
+    elif _mode == 4:
+        res = np.zeros_like(b)
+        for i in range(b.shape[1]):
+            A = csr_matrix((data[i, :], indices.T),
+                           shape=(b.shape[2], b.shape[2]), dtype=b.dtype)
+            A.eliminate_zeros()
+            for j in range(b.shape[0]):
+                res[j, i, :] = linalg.spsolve(A, b[j, i, :],
+                                              permc_spec=permc_spec,
+                                              use_umfpack=use_umfpack).astype(b.dtype)
+    else:
+        pass
+
+    return (res,)
 
   result, _, _ = mlir.emit_python_callback(
       ctx, _callback, None, args, ctx.avals_in, ctx.avals_out,
@@ -47,38 +77,53 @@ def _spsolve_cpu_lowering(ctx, data, indices, indptr, b, permc_spec, use_umfpack
   return result
 
 
-def _spsolve_jvp_lhs(data_dot, data, indices, indptr, b, **kwds):
+def _spsolve_jvp_lhs(data_dot, data, indices, b, **kwds):
     # d/dM M^-1 b = M^-1 M_dot M^-1 b
-    p = spsolve(data, indices, indptr, b, **kwds)
-    q = sparse.csr_matvec_p.bind(data_dot, indices, indptr, p,
-                                 shape=(indptr.size - 1, len(b)),
-                                 transpose=False)
-    return -spsolve(data, indices, indptr, q, **kwds)
+    p = spsolve(data, indices, b, **kwds)
+    md = kwds['_mode']
+    if md == 0:
+        A = sparse.BCOO((data_dot, indices), shape=(b.shape[0], b.shape[0]))
+        q = A @ p
+    elif md == 1: # TODO: implement.
+        pass
+    elif md == 2:
+        pass
+    elif md == 3:
+        A = sparse.empty((data.shape[0], b.shape[1], b.shape[1]),
+                         dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
+                         n_batch=1, n_dense=0, nse=data.shape[1])
+        A.data = data_dot
+        A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
+        q = sparse.bcoo_dot_general(A, p, dimension_numbers=(((1), (1)), ((0), (0))))
+        print(A.shape, p.shape, q.shape)
+    elif md == 4:
+        A = sparse.empty((data.shape[0], b.shape[2], b.shape[2]),
+                         dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
+                         n_batch=1, n_dense=0, nse=data.shape[1])
+        A.data = data_dot
+        A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
+        q = sparse.bcoo_dot_general(A, p, dimension_numbers=(((1), (1)), ((0), (0, 1))))
+        # print(A.shape, p.shape, q.shape)
+
+    else: # shouldn't reach there as handling is done in _spsolve_batch
+        return NotImplementedError()
+    return -spsolve(data, indices, q, **kwds)
 
 
-def _spsolve_jvp_rhs(b_dot, data, indices, indptr, b, **kwds):
+def _spsolve_jvp_rhs(b_dot, data, indices, b, **kwds):
     # d/db M^-1 b = M^-1 b_dot
-    return spsolve(data, indices, indptr, b_dot, **kwds)
+    return spsolve(data, indices, b_dot, **kwds)
 
-
-def _csr_transpose(data, indices, indptr):
-  # Transpose of a square CSR matrix
-  m = indptr.size - 1
-  row = jnp.cumsum(jnp.zeros_like(indices).at[indptr].add(1)) - 1
-  row_T, indices_T, data_T = jax.lax.sort((indices, row, data), num_keys=2)
-  indptr_T = jnp.zeros_like(indptr).at[1:].set(
-      jnp.cumsum(jnp.bincount(row_T, length=m)).astype(indptr.dtype))
-  return data_T, indices_T, indptr_T
-
-
-def _spsolve_transpose(ct, data, indices, indptr, b, **kwds):
+def _spsolve_transpose(ct, data, indices, b, **kwds):
   assert not ad.is_undefined_primal(indices)
-  assert not ad.is_undefined_primal(indptr)
   if ad.is_undefined_primal(b):
-    # TODO(jakevdp): can we do this without an explicit transpose?
-    data_T, indices_T, indptr_T = _csr_transpose(data, indices, indptr)
-    ct_out = spsolve(data_T, indices_T, indptr_T, ct, **kwds)
-    return data, indices, indptr, ct_out
+    indices_T = jnp.flip(indices, axis=1)
+    if isinstance(ct, ad.Zero):
+        rhs = jnp.zeros(b.aval.shape, b.aval.dtype)
+    else:
+        rhs = ct
+    ct_out = spsolve(data, indices_T, rhs, **kwds)
+    return data, indices, ct_out
   else:
     # Should never reach here, because JVP is linear wrt data.
     raise NotImplementedError("spsolve transpose with respect to data")
@@ -87,94 +132,52 @@ def _spsolve_transpose(ct, data, indices, indptr, b, **kwds):
 _spsolve_p = core.Primitive('cpu_spsolve')
 _spsolve_p.def_impl(functools.partial(xla.apply_primitive, _spsolve_p))
 _spsolve_p.def_abstract_eval(_spsolve_abstract_eval)
-ad.defjvp(_spsolve_p, _spsolve_jvp_lhs, None, None, _spsolve_jvp_rhs)
+ad.defjvp(_spsolve_p, _spsolve_jvp_lhs, None, _spsolve_jvp_rhs)
 ad.primitive_transposes[_spsolve_p] = _spsolve_transpose
 mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
 
-def spsolve(data, indices, indptr, b, permc_spec='COLAMD', use_umfpack=True):
+def spsolve(data, indices, b, permc_spec='COLAMD', use_umfpack=True, _mode=0):
   """A sparse direct solver, based completely on scipy.sparse.linalg.spsolve."""
-  return _spsolve_p.bind(data, indices, indptr, b, permc_spec=permc_spec, use_umfpack=use_umfpack)
+  return _spsolve_p.bind(data, indices, b, permc_spec=permc_spec, use_umfpack=use_umfpack,
+                         _mode=_mode)
 
 
 # TODO: try pushing loops down to the callback
 def _spsolve_batch(vals, axes, **kwargs):
-    Ad, Ai, Ap, b = vals
-    aAd, aAi, aAp, ab = axes
+    data, indices, b = vals
+    ad, ai, ab = axes
     res = jnp.zeros_like(b)
 
-    assert b.ndim < 3, 'Only one batch dimension is supported'
+    # assert b.ndim < 3, 'Only one batch dimension is supported'
+    assert data.ndim < 3, 'Only one batch dimension is supported'
+    assert indices.ndim == 2, '`indices` batching is not supported'
+    assert ai is None, '`indices` batching is not supported'
 
-    if aAd is None and ab is not None:
+    if ad is not None and ab is None:
+        data = jnp.moveaxis(data, ad, 0)
+        kwargs['_mode'] = 1
+
+    elif ad is None and ab is not None and b.ndim == 2:
         b = jnp.moveaxis(b, ab, 0)
-        def loop_func(i, val):
-            return val.at[i, :].set(spsolve(Ad, Ai, Ap, b[i, :], **kwargs))
+        kwargs['_mode'] = 2
 
-        res = jax.lax.fori_loop(0, b.shape[0], loop_func, res)
-
-    elif aAd is not None and ab is not None and aAi is None:
-        assert aAi is None, 'Batched arrays should have the same structure'
-        assert aAp is None, 'Batched arrays should have the same structure'
-
-        assert Ad.shape[aAd] == b.shape[ab]
-
-        Ad = jnp.moveaxis(Ad, aAd, 0)
+    elif ad is not None and ab is not None and b.ndim == 2:
+        assert data.shape[ad] == b.shape[ab], 'Matrices and bs should have same batching size'
+        data = jnp.moveaxis(data, ad, 0)
         b = jnp.moveaxis(b, ab, 0)
+        kwargs['_mode'] = 3
 
-        # TODO: use the fact that the sparsity pattern should be the same
-        # And maybe this loop can be vectorized across CPU cores
-        def loop_func(i, val):
-            return val.at[i, :].set(spsolve(Ad[i, :], Ai, Ap, b[i, :], **kwargs))
-
-        res = jax.lax.fori_loop(0, Ad.shape[0], loop_func, res)
+    elif data.ndim == 2 and b.ndim == 3:
+        b = jnp.moveaxis(b, ab, 0)
+        assert b.shape[1] == data.shape[0]
+        kwargs['_mode'] = 4
 
     else:
-        raise NotImplementedError('Matrices with different indices and indptrs')
+        raise NotImplementedError('Batching of spsolve with arguments shapes: '
+                                  f'{data.shape=}, {indices.shape=}, {b.shape=}')
 
+    res = spsolve(data, indices, b, **kwargs)
     return res, 0
 
 batching.primitive_batchers[_spsolve_p] = _spsolve_batch
-
-# jax.hessian needs batching rule for csr_matvec primitive
-def _csr_matvec_batch(vals, axes, **kwargs):
-    Ad, Ai, Ap, v = vals
-    aAd, aAi, aAp, av = axes
-    res = jnp.zeros_like(v)
-
-    assert v.ndim < 3, 'Only one batch dimension is supported'
-
-    if aAd is None and av is not None:
-        v = jnp.moveaxis(v, av, 0)
-        def loop_func(i, val):
-            return val.at[i, :].set(sparse.csr_matvec_p.bind(Ad, Ai, Ap, v[i, :], **kwargs))
-
-        res = jax.lax.fori_loop(0, v.shape[0], loop_func, res)
-
-    elif aAd is not None and av is not None and aAi is None and aAp is None:
-        assert Ad.shape[aAd] == v.shape[av]
-
-        Ad = jnp.moveaxis(Ad, aAd, 0)
-        v = jnp.moveaxis(v, av, 0)
-
-        # TODO: use the fact that the sparsity pattern should be the same
-        # And maybe this loop can be vectorized across CPU cores
-        def loop_func(i, val):
-            return val.at[i, :].set(sparse.csr_matvec_p.bind(Ad[i, :], Ai, Ap, v[i, :], **kwargs))
-
-        res = jax.lax.fori_loop(0, Ad.shape[0], loop_func, res)
-
-    elif aAd is not None and aAi is None and aAp is None and av is None:
-        Ad = jnp.moveaxis(Ad, aAd, 0)
-        res = jnp.zeros((Ad.shape[0], v.shape[0]), dtype=v.dtype)
-        def loop_func(i, val):
-            return val.at[i, :].set(sparse.csr_matvec_p.bind(Ad[i, :], Ai, Ap, v, **kwargs))
-
-        res = jax.lax.fori_loop(0, Ad.shape[0], loop_func, res)
-
-    else:
-        raise NotImplementedError('Matrices with different indices and indptrs : '
-                                  f'{axes=}')
-
-    return res, 0
-
-batching.primitive_batchers[jax.experimental.sparse.csr.csr_matvec_p] = _csr_matvec_batch

@@ -289,7 +289,7 @@ class Problem:
         rows = np.concatenate((rs, rs, rs + sz, rs + sz))
         cols = np.concatenate((cs, cs + sz, cs, cs + sz))
 
-        self.indices = np.vstack((rows, cols), dtype=np.int32).T
+        self.indices = np.vstack((rows, cols), dtype=np.int32).T.view(StaticNdArrayWrapper)
 
 
     def getFRFunction(self, batch_size: int = None):
@@ -345,9 +345,7 @@ class Problem:
             data = jnp.concatenate((A_real, -A_imag, -A_imag, -A_real))
             b = jnp.concatenate((b_real, -b_imag))
 
-            A = sparse.BCOO((data, indx), shape=(b.size, b.size))
-            A = sparse.BCSR.from_bcoo(A)
-            u = spsolve(A.data, A.indices, A.indptr, b)
+            u = spsolve(data, indx, b)
 
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18
@@ -372,25 +370,7 @@ class Problem:
 
         _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
 
-        if batch_size is None:
-            return _get_afc
-
-        # Workaround to avoid memory error
-        def _get_afc_batched(fs, params):
-            N_omega = fs.shape[0]
-            if batch_size >= N_omega:
-                return _get_afc(fs, params)
-            n_batches = (N_omega + batch_size - 1) // batch_size
-            afc = _get_afc(fs[:batch_size], params)
-            for i in range(1, n_batches - 1):
-                afc = jnp.vstack(
-                    (afc, _get_afc(fs[i * batch_size : (i + 1) * batch_size], params))
-                )
-            i += 1
-            afc = jnp.vstack((afc, _get_afc(fs[i * batch_size :], params)))
-            return afc
-
-        return _get_afc_batched
+        return _get_afc
 
     def solveForward(self, freqs: np.ndarray, params=None) -> np.ndarray:
         """
@@ -709,18 +689,3 @@ class Problem:
                                    'arguments or Problem attributes.') from err
 
         return self.material.D_to_phys(self.geometry.height, *params)
-
-    # def getLossAndDerivatives(
-    #    self, params_to_physical, frequencies, reference_afc, batch_size=None
-    # ):
-    #    _loss = self.getMSELossFunction(params_to_physical, frequencies, reference_afc)
-    #    _grad = jax.grad(_loss)
-    #    _hess = jax.hessian(_loss)
-
-    #    if batch_size is None:
-    #        return _loss, _grad, _hess
-
-    #    N_omega = frequencies.shape[0]
-
-    #    def loss_batched(params):
-    #        loss = 0.
