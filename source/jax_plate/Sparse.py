@@ -3,10 +3,9 @@ import functools
 
 import jax
 import jax.numpy as jnp
-
-from jax.experimental import sparse
 from jax import core
 from jax.interpreters import ad, batching, mlir, xla
+from jax.experimental import sparse
 
 import numpy as np
 from scipy.sparse import csr_matrix, linalg
@@ -15,66 +14,81 @@ from scipy.sparse import csr_matrix, linalg
 # Ensure that jax uses CPU
 jax.config.update('jax_platform_name', 'cpu')
 
-# Batching _mode`s:
-# 0 - no vectorization
-# 1 - data is vectorized
-# 2 - b is vectorized
-# 3 - data and b are vectorized
-# 4 - data and b are vectorized, b has 2 batch dims # needed for jax.hessian
 
 def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, _mode):
-  if data.dtype != b.dtype:
-    raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
-  if not (jnp.issubdtype(indices.dtype, jnp.integer)):
-    raise ValueError(f"index arrays must be integer typed; got {indices.dtype=}")
-  if permc_spec not in ['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']:
-    raise ValueError(f"{permc_spec=} not valid, must be one of "
-                     "['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']")
-  use_umfpack = bool(use_umfpack)
-  if not type(_mode) == int:
-      raise ValueError('invalid type of `_mode` argument, expected `int`, got '
-                       f'{type(_mode)}')
-  if _mode in (0, 2, 3, 4):
-      return b
-  elif _mode == 1:
-      return core.ShapedArray((data.shape[0], b.shape[0]), b.dtype)
-  else: # should't reach there as handling is dine in _spsolve_batch
-      raise NotImplementedError()
+    if data.dtype != b.dtype:
+        raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
+    if not (jnp.issubdtype(indices.dtype, jnp.integer)):
+        raise ValueError(f"index arrays must be integer typed; got {
+                         indices.dtype=}")
+    if permc_spec not in ['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']:
+        raise ValueError(f"{permc_spec=} not valid, must be one of "
+                         "['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']")
+    use_umfpack = bool(use_umfpack)
+    if type(_mode) != int:
+        raise ValueError('invalid type of `_mode` argument, expected `int`, got '
+                         f'{type(_mode)}')
+    if _mode in (0, 2, 3, 4):
+        return b
+    elif _mode == 1:
+        return core.ShapedArray((data.shape[0], b.shape[0]), b.dtype)
+    else:  # should't reach here as handling is done in _spsolve_batch
+        raise NotImplementedError()
 
 
 def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, _mode):
-  args = [data, indices, b]
+    args = [data, indices, b]
 
-  def _callback(data, indices, b, **kwargs):
-    if _mode in (0, 2):
-        pass
-    elif _mode == 3:
-        res = np.zeros_like(b)
-        for i in range(b.shape[0]):
-            A = csr_matrix((data[i, :], indices.T),
+    def _callback(data, indices, b, **kwargs):
+        if _mode == 0:
+            A = csr_matrix((data, indices.T),
                            shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
             A.eliminate_zeros()
-            res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
-                                       use_umfpack=use_umfpack).astype(b.dtype)
-    elif _mode == 4:
-        res = np.zeros_like(b)
-        for i in range(b.shape[1]):
-            A = csr_matrix((data[i, :], indices.T),
-                           shape=(b.shape[2], b.shape[2]), dtype=b.dtype)
+            res = linalg.spsolve(A, b, permc_spec=permc_spec,
+                                 use_umfpack=use_umfpack).astype(b.dtype)
+        elif _mode == 1:
+            res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
+            for i in range(data.shape[0]):
+                A = csr_matrix((data[i, :], indices.T),
+                               shape=(b.shape[0], b.shape[0]), dtype=b.dtype)
+                A.eliminate_zeros()
+                res[i, :] = linalg.spsolve(A, b, permc_spec=permc_spec,
+                                           use_umfpack=use_umfpack).astype(b.dtype)
+        elif _mode == 2:
+            res = np.zeros_like(b)
+            A = csr_matrix((data, indices.T),
+                           shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
             A.eliminate_zeros()
-            for j in range(b.shape[0]):
-                res[j, i, :] = linalg.spsolve(A, b[j, i, :],
-                                              permc_spec=permc_spec,
-                                              use_umfpack=use_umfpack).astype(b.dtype)
-    else:
-        pass
+            for i in range(b.shape[0]):
+                res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
+                                           use_umfpack=use_umfpack).astype(b.dtype)
+        elif _mode == 3:
+            res = np.zeros_like(b)
+            for i in range(b.shape[0]):
+                A = csr_matrix((data[i, :], indices.T),
+                               shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
+                A.eliminate_zeros()
+                res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
+                                           use_umfpack=use_umfpack).astype(b.dtype)
+        elif _mode == 4:
+            res = np.zeros_like(b)
+            for i in range(b.shape[1]):
+                A = csr_matrix((data[i, :], indices.T),
+                               shape=(b.shape[2], b.shape[2]), dtype=b.dtype)
+                A.eliminate_zeros()
+                for j in range(b.shape[0]):
+                    res[j, i, :] = linalg.spsolve(A, b[j, i, :],
+                                                  permc_spec=permc_spec,
+                                                  use_umfpack=use_umfpack).astype(b.dtype)
+        else:
+            raise NotImplementedError()
 
-    return (res,)
+        return (res,)
 
-  result, _, _ = mlir.emit_python_callback(
-      ctx, _callback, None, args, ctx.avals_in, ctx.avals_out,
-      has_side_effect=False)
-  return result
+    result, _, _ = mlir.emit_python_callback(
+        ctx, _callback, None, args, ctx.avals_in, ctx.avals_out,
+        has_side_effect=False)
+    return result
 
 
 def _spsolve_jvp_lhs(data_dot, data, indices, b, **kwds):
@@ -84,29 +98,41 @@ def _spsolve_jvp_lhs(data_dot, data, indices, b, **kwds):
     if md == 0:
         A = sparse.BCOO((data_dot, indices), shape=(b.shape[0], b.shape[0]))
         q = A @ p
-    elif md == 1: # TODO: implement.
-        pass
+    elif md == 1:  # TODO: implement.
+        A = sparse.empty((data.shape[0], b.shape[0], b.shape[0]),
+                         dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
+                         n_batch=1, n_dense=0, nse=data.shape[1])
+        A.data = data_dot
+        A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
+        q = sparse.bcoo_dot_general(A, p,
+                                    dimension_numbers=(((1), (0)), ((0), ())))
     elif md == 2:
-        pass
+        A = sparse.empty((b.shape[1], b.shape[1]),
+                         dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
+                         n_batch=0, n_dense=0, nse=data.shape[1])
+        A.data = data_dot
+        A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
+        q = sparse.bcoo_dot_general(A, p,
+                                    dimension_numbers=(((0), (1)), ((), (0))))
     elif md == 3:
         A = sparse.empty((data.shape[0], b.shape[1], b.shape[1]),
                          dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
                          n_batch=1, n_dense=0, nse=data.shape[1])
         A.data = data_dot
         A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
-        q = sparse.bcoo_dot_general(A, p, dimension_numbers=(((1), (1)), ((0), (0))))
-        print(A.shape, p.shape, q.shape)
+        q = sparse.bcoo_dot_general(A, p,
+                                    dimension_numbers=(((1), (1)), ((0), (0))))
     elif md == 4:
         A = sparse.empty((data.shape[0], b.shape[2], b.shape[2]),
                          dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
                          n_batch=1, n_dense=0, nse=data.shape[1])
         A.data = data_dot
         A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
-        q = sparse.bcoo_dot_general(A, p, dimension_numbers=(((1), (1)), ((0), (0, 1))))
-        # print(A.shape, p.shape, q.shape)
-
-    else: # shouldn't reach there as handling is done in _spsolve_batch
+        q = sparse.bcoo_dot_general(A, p,
+                                    dimension_numbers=(((1), (1)), ((0), (0, 1))))
+    else:  # shouldn't reach here as handling is done in _spsolve_batch
         return NotImplementedError()
+
     return -spsolve(data, indices, q, **kwds)
 
 
@@ -114,19 +140,20 @@ def _spsolve_jvp_rhs(b_dot, data, indices, b, **kwds):
     # d/db M^-1 b = M^-1 b_dot
     return spsolve(data, indices, b_dot, **kwds)
 
+
 def _spsolve_transpose(ct, data, indices, b, **kwds):
-  assert not ad.is_undefined_primal(indices)
-  if ad.is_undefined_primal(b):
-    indices_T = jnp.flip(indices, axis=1)
-    if isinstance(ct, ad.Zero):
-        rhs = jnp.zeros(b.aval.shape, b.aval.dtype)
+    assert not ad.is_undefined_primal(indices)
+    if ad.is_undefined_primal(b):
+        indices_T = jnp.flip(indices, axis=1)
+        if isinstance(ct, ad.Zero):
+            rhs = jnp.zeros(b.aval.shape, b.aval.dtype)
+        else:
+            rhs = ct
+        ct_out = spsolve(data, indices_T, rhs, **kwds)
+        return data, indices, ct_out
     else:
-        rhs = ct
-    ct_out = spsolve(data, indices_T, rhs, **kwds)
-    return data, indices, ct_out
-  else:
-    # Should never reach here, because JVP is linear wrt data.
-    raise NotImplementedError("spsolve transpose with respect to data")
+        # Should never reach here, because JVP is linear wrt data.
+        raise NotImplementedError("spsolve transpose with respect to data")
 
 
 _spsolve_p = core.Primitive('cpu_spsolve')
@@ -138,18 +165,23 @@ mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
 
 def spsolve(data, indices, b, permc_spec='COLAMD', use_umfpack=True, _mode=0):
-  """A sparse direct solver, based completely on scipy.sparse.linalg.spsolve."""
-  return _spsolve_p.bind(data, indices, b, permc_spec=permc_spec, use_umfpack=use_umfpack,
-                         _mode=_mode)
+    """A sparse direct solver, based completely on scipy.sparse.linalg.spsolve."""
+    return _spsolve_p.bind(data, indices, b, permc_spec=permc_spec, use_umfpack=use_umfpack,
+                           _mode=_mode)
 
 
-# TODO: try pushing loops down to the callback
+# Batching _mode`s:
+# 0 - no vectorization
+# 1 - data is vectorized
+# 2 - b is vectorized
+# 3 - data and b are vectorized
+# 4 - data and b are vectorized, b has 2 batch dims # needed for jax.hessian
 def _spsolve_batch(vals, axes, **kwargs):
     data, indices, b = vals
     ad, ai, ab = axes
     res = jnp.zeros_like(b)
 
-    # assert b.ndim < 3, 'Only one batch dimension is supported'
+    assert b.ndim < 4, 'Only two batch dimensions are supported'
     assert data.ndim < 3, 'Only one batch dimension is supported'
     assert indices.ndim == 2, '`indices` batching is not supported'
     assert ai is None, '`indices` batching is not supported'
@@ -179,5 +211,6 @@ def _spsolve_batch(vals, axes, **kwargs):
 
     res = spsolve(data, indices, b, **kwargs)
     return res, 0
+
 
 batching.primitive_batchers[_spsolve_p] = _spsolve_batch
