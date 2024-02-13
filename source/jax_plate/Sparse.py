@@ -11,8 +11,6 @@ import numpy as np
 from scipy.sparse import csr_matrix, linalg
 
 from multiprocessing import Pool, cpu_count
-import itertools
-
 
 # Ensure that jax uses CPU
 jax.config.update('jax_platform_name', 'cpu')
@@ -45,7 +43,7 @@ def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, n_cpu, 
         raise NotImplementedError()
 
 
-def _parallel_loop_func(data, indx, b, permc_spec, use_umfpack):
+def _parallel_loop_func(data, b, indx, permc_spec, use_umfpack):
     A = csr_matrix((data, indx.T), shape=(b.shape[0], b.shape[0]),
                                              dtype=b.dtype)
     A.eliminate_zeros()
@@ -72,34 +70,30 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu,
             pool = Pool(_n_cpu)
 
             if _mode == 1:
-                _res = pool.starmap(_parallel_loop_func, zip(data,
-                                                         itertools.repeat(indices),
-                                                         itertools.repeat(b),
-                                                         itertools.repeat(permc_spec),
-                                                         itertools.repeat(use_umfpack)))
+                _pfunc = functools.partial(_parallel_loop_func, indx=indices,
+                                           b=b, permc_spec=permc_spec,
+                                           use_umfpack=use_umfpack)
+                _res = pool.starmap(_pfunc, data)
                 res = np.array(_res, dtype=b.dtype)
             elif _mode == 2:
-                _res = pool.starmap(_parallel_loop_func, zip(itertools.repeat(data),
-                                                         itertools.repeat(indices),
-                                                         b,
-                                                         itertools.repeat(permc_spec),
-                                                         itertools.repeat(use_umfpack)))
+                _pfunc = functools.partial(_parallel_loop_func, data=data, indx=indices,
+                                           permc_spec=permc_spec,
+                                           use_umfpack=use_umfpack)
+                _res = pool.starmap(_pfunc, b)
                 res = np.array(_res, dtype=b.dtype)
             elif _mode == 3:
-                _res = pool.starmap(_parallel_loop_func, zip(data,
-                                                         itertools.repeat(indices),
-                                                         b,
-                                                         itertools.repeat(permc_spec),
-                                                         itertools.repeat(use_umfpack)))
+                _pfunc = functools.partial(_parallel_loop_func, indx=indices,
+                                           permc_spec=permc_spec,
+                                           use_umfpack=use_umfpack)
+                _res = pool.starmap(_pfunc, zip(data, b))
                 res = np.array(_res, dtype=b.dtype)
             elif _mode == 4: # lazy implementation, may be better without loop
                 res = []
+                _pfunc = functools.partial(_parallel_loop_func, indx=indices,
+                                           permc_spec=permc_spec,
+                                           use_umfpack=use_umfpack)
                 for i in range(b.shape[0]):
-                    _res = pool.starmap(_parallel_loop_func, zip(data,
-                                                             itertools.repeat(indices),
-                                                             b[i],
-                                                             itertools.repeat(permc_spec),
-                                                             itertools.repeat(use_umfpack)))
+                    _res = pool.starmap(_pfunc, zip(data, b[i]))
                     res.append(_res)
                 res = np.array(res, dtype=b.dtype)
             else:
