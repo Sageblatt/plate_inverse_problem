@@ -345,7 +345,7 @@ class Problem:
             data = jnp.concatenate((A_real, -A_imag, -A_imag, -A_real))
             b = jnp.concatenate((b_real, -b_imag))
 
-            u = spsolve(data, indx, b)
+            u = spsolve(data, indx, b, n_cpu=0)
 
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18

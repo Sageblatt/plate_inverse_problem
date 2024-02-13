@@ -10,12 +10,15 @@ from jax.experimental import sparse
 import numpy as np
 from scipy.sparse import csr_matrix, linalg
 
+from multiprocessing import Pool, cpu_count
+import itertools
+
 
 # Ensure that jax uses CPU
 jax.config.update('jax_platform_name', 'cpu')
 
 
-def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, _mode):
+def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, n_cpu, _mode):
     if data.dtype != b.dtype:
         raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
     if not (jnp.issubdtype(indices.dtype, jnp.integer)):
@@ -25,7 +28,13 @@ def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, _mode):
         raise ValueError(f"{permc_spec=} not valid, must be one of "
                          "['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']")
     use_umfpack = bool(use_umfpack)
-    if type(_mode) != int:
+    if n_cpu is not None:
+        if not isinstance(n_cpu, int):
+            raise ValueError(f'invalid type of `n_cpu` argument, expected `int` or `None`, '
+                             f'got {type(n_cpu)}')
+        if n_cpu < 0:
+            raise ValueError('n_cpu argument should be non-negative')
+    if not isinstance(_mode, int):
         raise ValueError('invalid type of `_mode` argument, expected `int`, got '
                          f'{type(_mode)}')
     if _mode in (0, 2, 3, 4):
@@ -36,7 +45,15 @@ def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, _mode):
         raise NotImplementedError()
 
 
-def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, _mode):
+def _parallel_loop_func(data, indx, b, permc_spec, use_umfpack):
+    A = csr_matrix((data, indx.T), shape=(b.shape[0], b.shape[0]),
+                                             dtype=b.dtype)
+    A.eliminate_zeros()
+    return linalg.spsolve(A, b, permc_spec=permc_spec,
+                               use_umfpack=use_umfpack).astype(b.dtype)
+
+
+def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu, _mode):
     args = [data, indices, b]
 
     def _callback(data, indices, b, **kwargs):
@@ -44,44 +61,90 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, _mode)
             A = csr_matrix((data, indices.T),
                            shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
             A.eliminate_zeros()
-            res = linalg.spsolve(A, b, permc_spec=permc_spec,
-                                 use_umfpack=use_umfpack).astype(b.dtype)
-        elif _mode == 1:
-            res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
-            for i in range(data.shape[0]):
-                A = csr_matrix((data[i, :], indices.T),
-                               shape=(b.shape[0], b.shape[0]), dtype=b.dtype)
-                A.eliminate_zeros()
-                res[i, :] = linalg.spsolve(A, b, permc_spec=permc_spec,
-                                           use_umfpack=use_umfpack).astype(b.dtype)
-        elif _mode == 2:
-            res = np.zeros_like(b)
-            A = csr_matrix((data, indices.T),
-                           shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-            A.eliminate_zeros()
-            for i in range(b.shape[0]):
-                res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
-                                           use_umfpack=use_umfpack).astype(b.dtype)
-        elif _mode == 3:
-            res = np.zeros_like(b)
-            for i in range(b.shape[0]):
-                A = csr_matrix((data[i, :], indices.T),
+            return (linalg.spsolve(A, b, permc_spec=permc_spec,
+                                 use_umfpack=use_umfpack).astype(b.dtype),)
+
+        if n_cpu is not None:
+            if n_cpu == 0:
+                _n_cpu = cpu_count()
+            else:
+                _n_cpu = n_cpu
+            pool = Pool(_n_cpu)
+
+            if _mode == 1:
+                _res = pool.starmap(_parallel_loop_func, zip(data,
+                                                         itertools.repeat(indices),
+                                                         itertools.repeat(b),
+                                                         itertools.repeat(permc_spec),
+                                                         itertools.repeat(use_umfpack)))
+                res = np.array(_res, dtype=b.dtype)
+            elif _mode == 2:
+                _res = pool.starmap(_parallel_loop_func, zip(itertools.repeat(data),
+                                                         itertools.repeat(indices),
+                                                         b,
+                                                         itertools.repeat(permc_spec),
+                                                         itertools.repeat(use_umfpack)))
+                res = np.array(_res, dtype=b.dtype)
+            elif _mode == 3:
+                _res = pool.starmap(_parallel_loop_func, zip(data,
+                                                         itertools.repeat(indices),
+                                                         b,
+                                                         itertools.repeat(permc_spec),
+                                                         itertools.repeat(use_umfpack)))
+                res = np.array(_res, dtype=b.dtype)
+            elif _mode == 4: # lazy implementation, may be better without loop
+                res = []
+                for i in range(b.shape[0]):
+                    _res = pool.starmap(_parallel_loop_func, zip(data,
+                                                             itertools.repeat(indices),
+                                                             b[i],
+                                                             itertools.repeat(permc_spec),
+                                                             itertools.repeat(use_umfpack)))
+                    res.append(_res)
+                res = np.array(res, dtype=b.dtype)
+            else:
+                raise NotImplementedError()
+
+            pool.close()
+            pool.join()
+
+        else:
+            if _mode == 1:
+                res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
+                for i in range(data.shape[0]):
+                    A = csr_matrix((data[i, :], indices.T),
+                                   shape=(b.shape[0], b.shape[0]), dtype=b.dtype)
+                    A.eliminate_zeros()
+                    res[i, :] = linalg.spsolve(A, b, permc_spec=permc_spec,
+                                               use_umfpack=use_umfpack).astype(b.dtype)
+            elif _mode == 2:
+                res = np.zeros_like(b)
+                A = csr_matrix((data, indices.T),
                                shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
                 A.eliminate_zeros()
-                res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
-                                           use_umfpack=use_umfpack).astype(b.dtype)
-        elif _mode == 4:
-            res = np.zeros_like(b)
-            for i in range(b.shape[1]):
-                A = csr_matrix((data[i, :], indices.T),
-                               shape=(b.shape[2], b.shape[2]), dtype=b.dtype)
-                A.eliminate_zeros()
-                for j in range(b.shape[0]):
-                    res[j, i, :] = linalg.spsolve(A, b[j, i, :],
-                                                  permc_spec=permc_spec,
-                                                  use_umfpack=use_umfpack).astype(b.dtype)
-        else:
-            raise NotImplementedError()
+                for i in range(b.shape[0]):
+                    res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
+                                               use_umfpack=use_umfpack).astype(b.dtype)
+            elif _mode == 3:
+                res = np.zeros_like(b)
+                for i in range(b.shape[0]):
+                    A = csr_matrix((data[i, :], indices.T),
+                                   shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
+                    A.eliminate_zeros()
+                    res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
+                                               use_umfpack=use_umfpack).astype(b.dtype)
+            elif _mode == 4:
+                res = np.zeros_like(b)
+                for i in range(b.shape[1]):
+                    A = csr_matrix((data[i, :], indices.T),
+                                   shape=(b.shape[2], b.shape[2]), dtype=b.dtype)
+                    A.eliminate_zeros()
+                    for j in range(b.shape[0]):
+                        res[j, i, :] = linalg.spsolve(A, b[j, i, :],
+                                                      permc_spec=permc_spec,
+                                                      use_umfpack=use_umfpack).astype(b.dtype)
+            else:
+                raise NotImplementedError()
 
         return (res,)
 
@@ -164,10 +227,10 @@ ad.primitive_transposes[_spsolve_p] = _spsolve_transpose
 mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
 
-def spsolve(data, indices, b, permc_spec='COLAMD', use_umfpack=True, _mode=0):
+def spsolve(data, indices, b, permc_spec='COLAMD', use_umfpack=True, n_cpu=None, _mode=0):
     """A sparse direct solver, based completely on scipy.sparse.linalg.spsolve."""
     return _spsolve_p.bind(data, indices, b, permc_spec=permc_spec, use_umfpack=use_umfpack,
-                           _mode=_mode)
+                           n_cpu=n_cpu,_mode=_mode)
 
 
 # Batching _mode`s:
