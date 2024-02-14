@@ -6,7 +6,7 @@ from time import perf_counter, gmtime, strftime
 
 import jax
 import jax.numpy as jnp
-import jax.scipy as jsp
+import jax.experimental.sparse as sparse
 import numpy as np
 import numpy.typing as npt
 
@@ -15,13 +15,25 @@ from .Material import Material, MaterialParams
 from .Geometry import Geometry, GeometryParams
 
 from .Input import Compressor
-from .pyFFInterface import getOutput, evaluateMatrixAndRHS, processFFOutput
+from .pyFFInterface import getOutput, processFFOutput
 from .Utils import get_source_dir
 from .Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 from .Optimizers import optResult
+from .Sparse import spsolve
 
 from jax.config import config
 config.update("jax_enable_x64", True)
+
+
+class StaticNdArrayWrapper(np.ndarray):
+    """
+    Hashable numpy.ndarray to be used as static argument in jax.jit.
+    """
+    def __hash__(self):
+        return 1
+
+    def __eq__(self, other):
+        return True
 
 
 class Problem:
@@ -209,25 +221,41 @@ class Problem:
 
         processed_ff_output = processFFOutput(getOutput(self.geometry.current_file))
 
-        # Loading necessary data from model to GPU
-        self.Ks = jnp.array(processed_ff_output["Ks"], dtype=jnp.float64)
-        self.fKs = jnp.array(processed_ff_output["fKs"])
-        self.M = jnp.array(processed_ff_output["M"])
-        self.fM = jnp.array(processed_ff_output["fM"])
-        self.L = jnp.array(processed_ff_output["L"])
-        self.fL = jnp.array(processed_ff_output["fL"])
+        m_names = ['M', 'L', "MCorrection", "LCorrection"]
+        matrices = []
 
-        # Correction of the inertia matrices by the mass of the accelerometer
-        MCorrection = jnp.array(processed_ff_output["MCorrection"])
-        fMCorrection = jnp.array(processed_ff_output["fMCorrection"])
-        LCorrection = jnp.array(processed_ff_output["LCorrection"])
-        fLCorrection = jnp.array(processed_ff_output["fLCorrection"])
+        for name in m_names:
+            matrices.append(processed_ff_output[name])
+
+        _mats = np.array(matrices)
+
+        _Ks = np.array(processed_ff_output['Ks'], dtype=np.float64)
+
+        nz_mask = (np.sum(np.abs(_Ks), axis=0) + np.sum(np.abs(_mats), axis=0)).nonzero()
+
+        self.M = _mats[0][nz_mask]
+        self.L = _mats[1][nz_mask]
+        MCorrection = _mats[2][nz_mask]
+        LCorrection = _mats[3][nz_mask]
+        self.Ks = np.zeros((6, self.M.size))
+
+        for i in range(0, 6):
+            self.Ks[i] = _Ks[i][nz_mask]
+
+        v_names = ['fKs', 'fM', 'fL']
+        for name in v_names:
+            setattr(self, name, np.array(processed_ff_output[name],
+                                         dtype=np.float64).view(StaticNdArrayWrapper))
+
+        fMCorrection = np.array(processed_ff_output["fMCorrection"], dtype=np.float64)
+        fLCorrection = np.array(processed_ff_output["fLCorrection"], dtype=np.float64)
 
         # TODO load can be not in phase with the BC vibration
         # and both BC and load may have different phases in points
         # so both of them have to be complex in general
         # but it is too comlicated as for now
-        self.fLoad = jnp.array(processed_ff_output["fLoad"])
+        self.fLoad = np.array(processed_ff_output["fLoad"],
+                              dtype=np.float64).view(StaticNdArrayWrapper)
 
         # Total (regular + rotational) inertia
         self.MInertia = self.rho * (self.M + 1.0 / 3.0 * self.e ** 2 * self.L)
@@ -248,15 +276,21 @@ class Problem:
                 fMCorrection + 1.0 / 3.0 * self.e ** 2 * fLCorrection
             )
 
-        self.interpolation_vector = jnp.array(
-            processed_ff_output["interpolation_vector"]
-        )
-        self.interpolation_value_from_bc = jnp.float32(
-            processed_ff_output["interpolation_value_from_bc"]
-        )
-        # TODO decide if we need to calculate in f64 in jax
+        self.interpolation_vector = np.array(processed_ff_output["interpolation_vector"],
+                                             dtype=np.float64)
+        self.interpolation_value_from_bc = np.float64(processed_ff_output["interpolation_value_from_bc"])
+
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
+
+        sz = self.fM.size
+        rs, cs = nz_mask
+
+        rows = np.concatenate((rs, rs, rs + sz, rs + sz))
+        cols = np.concatenate((cs, cs + sz, cs, cs + sz))
+
+        self.indices = np.vstack((rows, cols), dtype=np.int32).T.view(StaticNdArrayWrapper)
+
 
     def getFRFunction(self, batch_size: int = None):
         """
@@ -275,71 +309,68 @@ class Problem:
             test point.
 
         """
-        def _solve(f, params):
+        def _solve(f, params, Ks, fKs, MInertia, fInertia, fLoad,
+                   interpolation_vector, interpolation_value_from_bc,
+                   transform, indx):
             # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
-            e = self.e
+
             # transform is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
             # theta is the set of parameters; for example see ParamTransforms.isotropic_to_full
-            D, beta = self.material.transform(params, omega)
+            D, beta = transform(params, omega)
             loss_moduli = beta * D
 
             # K_real = \sum K_ij*D_ij/(2.*e)
             # K_imag = \sum K_ij*D_ij/(2.*e)
             # Ks are matrices from eq (4.1.7)
-            K_real = jnp.einsum(self.Ks, [0, ...], D, [0]) / 2.0 / e
-            K_imag = jnp.einsum(self.Ks, [0, ...], loss_moduli, [0]) / 2.0 / e
+            K_real = jnp.einsum(Ks, [0, ...], D, [0])
+            K_imag = jnp.einsum(Ks, [0, ...], loss_moduli, [0])
 
             # f_imag = ..
             # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
-            fK_real = jnp.einsum(self.fKs, [0, ...], D, [0]) / 2.0 / e
-            fK_imag = jnp.einsum(self.fKs, [0, ...], loss_moduli, [0]) / 2.0 / e
+            fK_real = jnp.einsum(fKs, [0, ...], D, [0])
+            fK_imag = jnp.einsum(fKs, [0, ...], loss_moduli, [0])
 
             # Formulate system (A_real + i*A_imag)(u_real + i*u_imag) = (b_real + i*b_imag)
             # and create matrix from blocks for real solution
             # MInertia == rho*(M + 1/3 e^2 L) from
-            A_real = -(omega ** 2) * self.MInertia + K_real
+            A_real = -(omega ** 2) * MInertia + K_real
             A_imag = K_imag
-            b_real = -(omega ** 2) * self.fInertia + fK_real + self.fLoad / 2.0 / e
+            b_real = -(omega ** 2) * fInertia + fK_real + fLoad
             b_imag = fK_imag
 
-            A = jnp.vstack(
-                (jnp.hstack((A_real, -A_imag)), jnp.hstack((-A_imag, -A_real)))
-            )
+            # A = vstack(
+            #     (hstack((A_real, -A_imag)), hstack((-A_imag, -A_real)))
+            # )
+            data = jnp.concatenate((A_real, -A_imag, -A_imag, -A_real))
             b = jnp.concatenate((b_real, -b_imag))
 
-            u = jsp.linalg.solve(A, b, check_finite=False)
+            u = spsolve(data, indx, b, n_cpu=0)
 
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18
-            u_in_test_point = jnp.array([self.interpolation_value_from_bc, 0.0]) +\
-            self.interpolation_vector @ u.reshape(  # real, imag
+            u_in_test_point = jnp.array([interpolation_value_from_bc, 0.0]) +\
+            interpolation_vector @ u.reshape(  # real, imag
                 (-1, 2), order="F"
             )
 
             return u_in_test_point[0] + 1j * u_in_test_point[1]
 
-        _get_afc = jax.jit(jax.vmap(_solve, in_axes=(0, None),))
 
-        if batch_size is None:
-            return _get_afc
+        _solve_p = jax.tree_util.Partial(_solve,
+                                         Ks=self.Ks / 2.0 / self.e,
+                                         fKs=self.fKs / 2.0 / self.e,
+                                         MInertia=self.MInertia,
+                                         fInertia=self.fInertia,
+                                         fLoad=self.fLoad / 2.0 / self.e,
+                                         interpolation_vector=self.interpolation_vector,
+                                         interpolation_value_from_bc=self.interpolation_value_from_bc,
+                                         transform=self.material.transform,
+                                         indx=self.indices)
 
-        # Workaround to avoid memory error
-        def _get_afc_batched(fs, params):
-            N_omega = fs.shape[0]
-            if batch_size >= N_omega:
-                return _get_afc(fs, params)
-            n_batches = (N_omega + batch_size - 1) // batch_size
-            afc = _get_afc(fs[:batch_size], params)
-            for i in range(1, n_batches - 1):
-                afc = jnp.vstack(
-                    (afc, _get_afc(fs[i * batch_size : (i + 1) * batch_size], params))
-                )
-            i += 1
-            afc = jnp.vstack((afc, _get_afc(fs[i * batch_size :], params)))
-            return afc
+        _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
 
-        return _get_afc_batched
+        return _get_afc
 
     def solveForward(self, freqs: np.ndarray, params=None) -> np.ndarray:
         """
@@ -547,8 +578,8 @@ class Problem:
 
             comp_str = ''
             if compression[0]:
-                comp_str = f'Using compression algorithm {comp_alg} with '
-                f'{compression[1]} points.\n'
+                comp_str = (f'Using compression algorithm {comp_alg} with '
+                            f'{compression[1]} points.\n')
 
 
             rep_str = (f'{self.accelerometer}\n{self.material}\n{self.geometry}\n'
@@ -658,18 +689,3 @@ class Problem:
                                    'arguments or Problem attributes.') from err
 
         return self.material.D_to_phys(self.geometry.height, *params)
-
-    # def getLossAndDerivatives(
-    #    self, params_to_physical, frequencies, reference_afc, batch_size=None
-    # ):
-    #    _loss = self.getMSELossFunction(params_to_physical, frequencies, reference_afc)
-    #    _grad = jax.grad(_loss)
-    #    _hess = jax.hessian(_loss)
-
-    #    if batch_size is None:
-    #        return _loss, _grad, _hess
-
-    #    N_omega = frequencies.shape[0]
-
-    #    def loss_batched(params):
-    #        loss = 0.

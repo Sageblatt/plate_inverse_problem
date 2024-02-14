@@ -7,5 +7,6 @@ from jax_plate import (
     ParamTransforms,
     Problem,
     pyFFInterface,
+    Sparse,
     Utils
 )
