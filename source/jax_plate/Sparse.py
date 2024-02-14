@@ -20,8 +20,7 @@ def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, n_cpu, 
     if data.dtype != b.dtype:
         raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
     if not (jnp.issubdtype(indices.dtype, jnp.integer)):
-        raise ValueError(f"index arrays must be integer typed; got {
-                         indices.dtype=}")
+        raise ValueError(f"index arrays must be integer typed; got {indices.dtype=}")
     if permc_spec not in ['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']:
         raise ValueError(f"{permc_spec=} not valid, must be one of "
                          "['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']")
