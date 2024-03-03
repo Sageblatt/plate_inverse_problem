@@ -10,6 +10,8 @@ import jax.experimental.sparse as sparse
 import numpy as np
 import numpy.typing as npt
 
+import functools
+
 from .Accelerometer import Accelerometer, AccelerometerParams
 from .Material import Material, MaterialParams
 from .Geometry import Geometry, GeometryParams
@@ -39,7 +41,7 @@ class StaticNdArrayWrapper(np.ndarray):
 class Problem:
     """
     Defines the geometry and those of the parameters that are known before the
-    experiment. Stores FEM matrices on GPU, produces differentiable jax functions.
+    experiment. Stores FEM matrices, produces differentiable jax functions.
     """
     def __init__(self,
                  geometry: Geometry = None,
@@ -71,7 +73,7 @@ class Problem:
             folders within `JAX_PLATE_SOURCE_DIR/setups`. Setup folder should
             contain `setup.json` file, that contains any of 'geometry',
             'accelerometer' and 'material' entities with corresponding
-            parameters, so the Geometry, Accelerometer and Material object can
+            parameters, so the Geometry, Accelerometer and Material objects can
             be created. If any of these entities is missing then corresponding
             argument should be provided.
 
@@ -227,7 +229,7 @@ class Problem:
         for name in m_names:
             matrices.append(processed_ff_output[name])
 
-        _mats = np.array(matrices)
+        _mats = np.array(matrices) # TODO: check if we can avoid copying here
 
         _Ks = np.array(processed_ff_output['Ks'], dtype=np.float64)
 
@@ -291,15 +293,10 @@ class Problem:
 
         self.indices = np.vstack((rows, cols), dtype=np.int32).T.view(StaticNdArrayWrapper)
 
-
-    def getFRFunction(self, batch_size: int = None):
+    @functools.cache
+    def getFRFunction(self):
         """
         Creates a function to evaluate AFC.
-
-        Parameters
-        ----------
-        batch_size : int, optional
-            If present, optimization will use batches to avoid memory error.
 
         Returns
         -------
@@ -625,11 +622,10 @@ class Problem:
         self,
         frequencies: jax.Array,
         reference_fr: jax.Array,
-        func_type: str, # Available options are: MSE, RMSE, MSE_AFC, MSE_LOG_AFC
-        batch_size: int = None
+        func_type: str # Available options are: MSE, RMSE, MSE_AFC, MSE_LOG_AFC
     ) -> Callable:
         assert frequencies.shape[0] == reference_fr.shape[0]
-        fr_function = self.getFRFunction(batch_size)
+        fr_function = self.getFRFunction()
 
         if func_type == "MSE":
             def MSELoss(params):

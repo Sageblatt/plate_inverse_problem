@@ -20,7 +20,7 @@ class FixedParameterFunction:
     """
     def __init__(self, function: Callable,
                  param_size: int,
-                 fixed_indexes: int | tuple,
+                 fixed_indices: int | tuple,
                  fixed_values: float | tuple):
         """
         Constructor method.
@@ -31,7 +31,7 @@ class FixedParameterFunction:
             Function to be modified.
         param_size : int
             Overall amount of parameters of function.
-        fixed_indexes : int | tuple
+        fixed_indices : int | tuple
             Fixed parameters' indexes, starting from 0.
         fixed_values : float | tuple
             Values to be fixed.
@@ -44,14 +44,14 @@ class FixedParameterFunction:
         self.array = np.zeros(param_size)
         self.free_idx = [i for i in range(param_size)]
 
-        if isinstance(fixed_indexes, int) or isinstance(fixed_values, float):
-            assert isinstance(fixed_indexes, int)
-            assert isinstance(fixed_values, float)
-            self.array[fixed_indexes] = fixed_values
-            self.free_idx.remove(fixed_indexes)
+        if isinstance(fixed_indices, int) or isinstance(fixed_values, float):
+            assert isinstance(fixed_indices, int), f'got {type(fixed_indices)}'
+            assert isinstance(fixed_values, float), f'got {type(fixed_values)}'
+            self.array[fixed_indices] = fixed_values
+            self.free_idx.remove(fixed_indices)
         else:
-            assert len(fixed_indexes) == len(fixed_values)
-            for i, idx in enumerate(fixed_indexes):
+            assert len(fixed_indices) == len(fixed_values)
+            for i, idx in enumerate(fixed_indices):
                 self.array[idx] = fixed_values[i]
                 self.free_idx.remove(idx)
 

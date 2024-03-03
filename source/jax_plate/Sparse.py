@@ -154,7 +154,7 @@ def _spsolve_jvp_lhs(data_dot, data, indices, b, **kwds):
     if md == 0:
         A = sparse.BCOO((data_dot, indices), shape=(b.shape[0], b.shape[0]))
         q = A @ p
-    elif md == 1:  # TODO: implement.
+    elif md == 1:
         A = sparse.empty((data.shape[0], b.shape[0], b.shape[0]),
                          dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
                          n_batch=1, n_dense=0, nse=data.shape[1])
@@ -184,8 +184,15 @@ def _spsolve_jvp_lhs(data_dot, data, indices, b, **kwds):
                          n_batch=1, n_dense=0, nse=data.shape[1])
         A.data = data_dot
         A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
-        q = sparse.bcoo_dot_general(A, p,
-                                    dimension_numbers=(((1), (1)), ((0), (0, 1))))
+        q = jnp.zeros_like(p)
+
+        def _loop_func(i, res):
+            return res.at[i, :, :].set(
+                sparse.bcoo_dot_general(A, p[i, :, :],
+                                        dimension_numbers=(((1), (1)), ((0), (0)))))
+
+        q = jax.lax.fori_loop(0, b.shape[0], _loop_func, q)
+
     else:  # shouldn't reach here as handling is done in _spsolve_batch
         return NotImplementedError()
 
