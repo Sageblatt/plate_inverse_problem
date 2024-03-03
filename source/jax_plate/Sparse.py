@@ -25,12 +25,11 @@ def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, n_cpu, 
         raise ValueError(f"{permc_spec=} not valid, must be one of "
                          "['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']")
     use_umfpack = bool(use_umfpack)
-    if n_cpu is not None:
-        if not isinstance(n_cpu, int):
-            raise ValueError(f'invalid type of `n_cpu` argument, expected `int` or `None`, '
-                             f'got {type(n_cpu)}')
-        if n_cpu < 0:
-            raise ValueError('n_cpu argument should be non-negative')
+    if not isinstance(n_cpu, int):
+        raise ValueError(f'invalid type of `n_cpu` argument, expected `int`, '
+                         f'got {type(n_cpu)}')
+    if n_cpu < 0:
+        raise ValueError('n_cpu argument should be non-negative')
     if not isinstance(_mode, int):
         raise ValueError('invalid type of `_mode` argument, expected `int`, got '
                          f'{type(_mode)}')
@@ -61,7 +60,7 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu,
             return (linalg.spsolve(A, b, permc_spec=permc_spec,
                                  use_umfpack=use_umfpack).astype(b.dtype),)
 
-        if n_cpu is not None:
+        if n_cpu != 1:
             if n_cpu == 0:
                 _n_cpu = cpu_count()
             else:
@@ -228,7 +227,7 @@ mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
 
 def spsolve(data, indices, b, permc_spec='COLAMD', use_umfpack=True, n_cpu=None, _mode=0):
-    """A sparse direct solver, based completely on scipy.sparse.linalg.spsolve."""
+    """A sparse direct solver, based on scipy.sparse.linalg.spsolve."""
     return _spsolve_p.bind(data, indices, b, permc_spec=permc_spec, use_umfpack=use_umfpack,
                            n_cpu=n_cpu,_mode=_mode)
 

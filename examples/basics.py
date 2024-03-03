@@ -17,8 +17,8 @@ fr = p.solveForward(freq)
 p0 = [0.1, 0.1, 0.2]
 
 res = p.solveInverseLocal(p0, 'MSE_LOG_AFC', 'grad_descent', ref_fr=[freq, fr], use_rel=True,
-                          compression=(False, N), case_name='Initial_test',
-                          extra_info='Testing sparse.\n',
+                          compression=(False, N), case_name='Example_',
+                          extra_info='Running `basics.py` example.\n',
                           N_steps=2, h=0.001, f_min=1e-5)
 
 hist = res.f_history

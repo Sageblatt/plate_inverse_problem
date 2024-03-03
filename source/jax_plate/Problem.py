@@ -49,6 +49,7 @@ class Problem:
                  accel: Accelerometer = None,
                  ref_fr: tuple[np.ndarray, np.ndarray] = None,
                  *,
+                 cpu: int | None = 0,
                  spath: str | os.PathLike = None):
         """
         Constructor method.
@@ -56,7 +57,7 @@ class Problem:
         Parameters
         ----------
         geometry : Geometry
-            If this argument is the Geometry object, then `material` and `accel`
+            If this argument is a Geometry object, then `material` and `accel`
             arguments become mandatory.
         material : Material, optional
             Material object, has to contain `density`, `atype`, `transform`
@@ -69,13 +70,18 @@ class Problem:
             first element is an array of frequencies, second one is an array of
             complex amplitudes. The default is None.
         spath: str | os.PathLike, optional
+        cpu : int | None, optional
+            A number of CPU cores to use when solving forward problem for
+            multiple frequencies. If value is `0` uses maximum amount of cores
+            available. The default is 0.
+        spath : str | os.PathLike, optional
             A path to a setup folder. Relative path can be used to locate
             folders within `JAX_PLATE_SOURCE_DIR/setups`. Setup folder should
             contain `setup.json` file, that contains any of 'geometry',
             'accelerometer' and 'material' entities with corresponding
             parameters, so the Geometry, Accelerometer and Material objects can
             be created. If any of these entities is missing then corresponding
-            argument should be provided.
+            argument should be provided. The default is None.
 
         Returns
         -------
@@ -85,6 +91,7 @@ class Problem:
         if (geometry, accel, material, spath) == (None, ) * 4:
             raise ValueError('Cannot create a Problem object without arguments.')
 
+        self.n_cpu = cpu
         # Branch for creation without spath arg
         if spath is None:
             if None in (geometry, accel, material):
@@ -308,7 +315,7 @@ class Problem:
         """
         def _solve(f, params, Ks, fKs, MInertia, fInertia, fLoad,
                    interpolation_vector, interpolation_value_from_bc,
-                   transform, indx):
+                   transform, indx, cpu):
             # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
 
@@ -342,7 +349,7 @@ class Problem:
             data = jnp.concatenate((A_real, -A_imag, -A_imag, -A_real))
             b = jnp.concatenate((b_real, -b_imag))
 
-            u = spsolve(data, indx, b, n_cpu=0)
+            u = spsolve(data, indx, b, n_cpu=cpu)
 
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18
@@ -363,7 +370,8 @@ class Problem:
                                          interpolation_vector=self.interpolation_vector,
                                          interpolation_value_from_bc=self.interpolation_value_from_bc,
                                          transform=self.material.transform,
-                                         indx=self.indices)
+                                         indx=self.indices,
+                                         cpu=self.n_cpu)
 
         _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
 
