@@ -17,3 +17,5 @@ source/jax_plate/geometry/
 source/jax_plate.egg-info/
 
 source/sync.sh
+
+source/jax_plate/accelerometers/
