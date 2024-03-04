@@ -5,7 +5,7 @@ import numpy as np
 
 acc = jp.Accelerometer.Accelerometer('AP1030')
 geom = jp.Geometry.Geometry('symm', acc, jp.Geometry.GeometryParams(100e-3, 20e-3, 2e-3, 10e-3, None))
-mat = jp.Material.Material(jp.Material.MaterialParams(7920, 'isotropic', E = 200*1e9, G = 75*1e9 , beta = .003))
+mat = jp.Material.get_material(7920.0, 'isotropic', E = 200*1e9, G = 75*1e9 , beta = .003)
 
 p = jp.Problem.Problem(geom, mat, acc)
 
@@ -28,6 +28,6 @@ r1 = p.solveForward(freq, (np.array(p0) + 1)*p.parameters)
 r2 = p.solveForward(freq, res)
 
 print(f'FR: {np.sum(np.abs(fr)):.4f}, expected: 461.5199')
-print(f'Initial: {np.sum(np.abs(r1)):.4f}, expected: expected: 88.6746')
-print(f'After: {np.sum(np.abs(r2)):.4f}, expected: 88.8219')
-print(f'F_hist: {np.sum(np.abs(hist)):.4f}, expected: 0.4122')
+print(f'Initial: {np.sum(np.abs(r1)):.4f}, expected: expected: 90.8328')
+print(f'After: {np.sum(np.abs(r2)):.4f}, expected: 90.8340')
+print(f'F_hist: {np.sum(np.abs(hist)):.4f}, expected: 0.5177')

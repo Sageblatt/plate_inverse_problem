@@ -1,27 +1,24 @@
-import os
+import functools
 import json
-import warnings
-from typing import Callable
+import os
 from time import perf_counter, gmtime, strftime
+from typing import Callable
+import warnings
 
 import jax
 import jax.numpy as jnp
-import jax.experimental.sparse as sparse
 import numpy as np
 import numpy.typing as npt
 
-import functools
-
-from .Accelerometer import Accelerometer, AccelerometerParams
-from .Material import Material, MaterialParams
-from .Geometry import Geometry, GeometryParams
-
-from .Input import Compressor
-from .pyFFInterface import getOutput, processFFOutput
-from .Utils import get_source_dir
-from .Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
-from .Optimizers import optResult
-from .Sparse import spsolve
+from jax_plate.Accelerometer import Accelerometer, AccelerometerParams
+from jax_plate.Material import Material, get_material
+from jax_plate.Geometry import Geometry, GeometryParams
+from jax_plate.Input import Compressor
+from jax_plate.pyFFInterface import getOutput, processFFOutput
+from jax_plate.Utils import get_source_dir
+from jax_plate.Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
+from jax_plate.Optimizers import optResult
+from jax_plate.Sparse import spsolve
 
 from jax.config import config
 config.update("jax_enable_x64", True)
@@ -60,8 +57,7 @@ class Problem:
             If this argument is a Geometry object, then `material` and `accel`
             arguments become mandatory.
         material : Material, optional
-            Material object, has to contain `density`, `atype`, `transform`
-            attributes. The default is None.
+            Material object. The default is None.
         accel : Accelerometer, optional
             Accelerometer object, has to contain `mass` and `radius` attributes.
             The default is None.
@@ -69,7 +65,6 @@ class Problem:
             Reference frequency response obtained from experiment,
             first element is an array of frequencies, second one is an array of
             complex amplitudes. The default is None.
-        spath: str | os.PathLike, optional
         cpu : int | None, optional
             A number of CPU cores to use when solving forward problem for
             multiple frequencies. If value is `0` uses maximum amount of cores
@@ -128,24 +123,26 @@ class Problem:
             with open(setup_fpath, 'r') as file:
                 setup_params = json.load(file)
 
-            param_dict = {'accelerometer': (Accelerometer, AccelerometerParams),
-                          'material': (Material, MaterialParams)}
-
             # Try to read material and accel from setup.json if possible
-            for key in param_dict:
-                if key not in setup_params:
-                    continue
-
-                if isinstance(setup_params[key], str):
-                    setattr(self, key,
-                            param_dict[key][0](setup_params[key]))
-
-                elif isinstance(setup_params[key], dict):
-                    setattr(self, key,
-                            param_dict[key][0](param_dict[key][1](**setup_params[key])))
-
+            if 'accelerometer' in setup_params:
+                name_or_params = setup_params['accelerometer']
+                if isinstance(name_or_params, str):
+                    self.accelerometer = Accelerometer(name_or_params)
+                elif isinstance(name_or_params, dict):
+                    self.accelerometer = Accelerometer(AccelerometerParams(**name_or_params))
                 else:
-                    raise TypeError(f'In file {setup_fpath} key "{key}" '
+                    raise TypeError(f'In file {setup_fpath} key `accelerometer` '
+                                    'should have a value with type `str` or'
+                                    ' `dict`.')
+
+            if 'material' in setup_params:
+                name_or_params = setup_params['material']
+                if isinstance(name_or_params, str):
+                    self.material = get_material(name_or_params)
+                elif isinstance(name_or_params, dict):
+                    self.material = get_material(name_or_params)
+                else:
+                    raise TypeError(f'In file {setup_fpath} key `material` '
                                     'should have a value with type `str` or'
                                     ' `dict`.')
 
@@ -214,10 +211,9 @@ class Problem:
                 raise RuntimeError('One of the `geometry`, `accelerometer`, '
                                    '`materials` attributes was not provided '
                                    'in setup.json nor as an argument.')
-        try:
-            self.parameters = jnp.array(self.material.get_params(self.geometry.height))
-
-        except TypeError:
+        if self.material.has_params:
+            self.parameters = self.material.get_parameters()
+        else:
             warnings.warn('Some elastic moduli of a material were not provided, '
                           'solving forward problem as standalone will not be '
                           'possible.', RuntimeWarning)
@@ -369,7 +365,7 @@ class Problem:
                                          fLoad=self.fLoad / 2.0 / self.e,
                                          interpolation_vector=self.interpolation_vector,
                                          interpolation_value_from_bc=self.interpolation_value_from_bc,
-                                         transform=self.material.transform,
+                                         transform=self.material.get_transform(self.geometry.height),
                                          indx=self.indices,
                                          cpu=self.n_cpu)
 
@@ -415,7 +411,6 @@ class Problem:
                           use_rel: bool = False,
                           report: bool = True,
                           log: bool = True,
-                          report_moduli: bool = True,
                           case_name: str = '',
                           uid: str = None,
                           extra_info: str = '',
@@ -466,10 +461,6 @@ class Problem:
             The default is True.
         log : bool, optional
             Write all optimization steps to `.npz` archive. The default is True.
-        report_moduli : bool, optional
-            If `True` the information about physical elastic moduli will be
-            included in the report (etc. Young's modulus and shear modulus for
-            isotropic material). The default is True.
         case_name : str, optional
             Name which will be used as prefix to log and report filenames.
             The default is ''.
@@ -560,26 +551,11 @@ class Problem:
                 rel_err1 = (params0 - np.array(x0)) / params0
                 rel_err2 = (params0 - np.array(result.x)) / params0
 
-                if report_moduli:
-                    other_moduli0 = np.array(self.getPhysicalModuli(x0))
-                    other_moduli = np.array(self.getPhysicalModuli(result.x))
-                    other_moduli_real = np.array(self.getPhysicalModuli(params0))
-                    om_r_err1 = np.array((other_moduli_real - other_moduli0) / other_moduli_real)
-                    om_r_err2 = np.array((other_moduli_real - other_moduli) / other_moduli_real)
-
             def a2s(s):
                 if isinstance(s, str):
                     return s
 
                 return np.array2string(np.array(s), separator=', ')
-
-            mod_str1 = ''
-            mod_str2 = ''
-            if report_moduli:
-                mod_str1 = (f'In physical moduli: {a2s(other_moduli0)}\n'
-                            f'With rel. error: {a2s(om_r_err1)}\n')
-                mod_str2 = (f'In physical moduli: {a2s(other_moduli)}\n'
-                            f'With rel. error: {a2s(om_r_err2)}\n')
 
             comp_str = ''
             if compression[0]:
@@ -590,13 +566,11 @@ class Problem:
             rep_str = (f'{self.accelerometer}\n{self.material}\n{self.geometry}\n'
                        + extra_info + comp_str +
                        f'Starting parameters: {a2s(x0)}.\n'
-                       f'With relative error: {a2s(rel_err1)}.\n' +
-                       mod_str1 +
+                       f'With relative error: {a2s(rel_err1)}.\n'
                        f'Initial loss: {result.f_history[0]}.\n'
                        f'Elapsed time: {elapsed} min.\n'
                        f'After optimization: {a2s(result.x)}.\n'
-                       f'With relative error: {a2s(rel_err2)}.\n' +
-                       mod_str2 +
+                       f'With relative error: {a2s(rel_err2)}.\n'
                        f'Resulting loss: {result.f}.\n'
                        f'Optimization status: {result.status}.\n'
                        f'Optimizer parameters: {opt_kwargs}\n'
@@ -666,30 +640,3 @@ class Problem:
 
         else:
             raise ValueError(f'Function type "{func_type}" is not supported!')
-
-    def getPhysicalModuli(self, params: np.ndarray | jax.Array = None) -> tuple:
-        """
-        Get physical moduli from Ds.
-        For example, for isotropic material returns Young's modulus `E` and shear
-        modulus `G` from flexural rigidity `D` and Poisson's ratio `nu`.
-
-        Parameters
-        ----------
-        params : np.ndarray | jax.Array
-            Parameters to be tranformed. If `None`, tries to uses parameters
-            stored in Problem object.
-
-        Returns
-        -------
-        tuple
-            Tuple of float containing physical moduli for given material.
-
-        """
-        if params is None:
-            try:
-                params = self.parameters
-            except AttributeError as err:
-                raise RuntimeError('Cannot get parameters from function '
-                                   'arguments or Problem attributes.') from err
-
-        return self.material.D_to_phys(self.geometry.height, *params)
