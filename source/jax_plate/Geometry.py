@@ -1,9 +1,9 @@
+from dataclasses import dataclass
 import os
 import re
 import shutil
-from dataclasses import dataclass
-from .Utils import get_jax_plate_dir
-from .Accelerometer import Accelerometer, AccelerometerParams
+from jax_plate.Utils import get_jax_plate_dir
+from jax_plate.Accelerometer import Accelerometer, AccelerometerParams
 
 
 # Available options are documented in Geometry.__init__ docstring.

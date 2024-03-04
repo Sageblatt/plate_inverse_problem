@@ -20,9 +20,6 @@ from jax_plate.Optimizers import optimize_trust_region, optimize_cd, optimize_gd
 from jax_plate.Optimizers import optResult
 from jax_plate.Sparse import spsolve
 
-from jax.config import config
-config.update("jax_enable_x64", True)
-
 
 class StaticNdArrayWrapper(np.ndarray):
     """

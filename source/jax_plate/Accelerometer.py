@@ -1,7 +1,8 @@
-import os
-import json
 from dataclasses import dataclass
-from .Utils import get_jax_plate_dir
+import json
+import os
+
+from jax_plate.Utils import get_jax_plate_dir
 
 @dataclass
 class AccelerometerParams:

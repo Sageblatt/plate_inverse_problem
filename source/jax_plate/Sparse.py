@@ -1,19 +1,19 @@
 """Modified CPU version of jax.experimental.sparse.linalg.spsolve with batching"""
 import functools
+from multiprocessing import Pool, cpu_count
 
 import jax
-import jax.numpy as jnp
 from jax import core
-from jax.interpreters import ad, batching, mlir, xla
 from jax.experimental import sparse
-
+from jax.interpreters import ad, batching, mlir, xla
+import jax.numpy as jnp
 import numpy as np
 from scipy.sparse import csr_matrix, linalg
 
-from multiprocessing import Pool, cpu_count
 
 # Ensure that jax uses CPU
 jax.config.update('jax_platform_name', 'cpu')
+jax.config.update("jax_enable_x64", True)
 
 
 def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, n_cpu, _mode):
