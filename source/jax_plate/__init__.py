@@ -4,7 +4,6 @@ from jax_plate import (
     Input,
     Material,
     Optimizers,
-    ParamTransforms,
     Problem,
     pyFFInterface,
     Sparse,

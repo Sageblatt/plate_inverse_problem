@@ -1,7 +1,8 @@
 import numpy as np
 import pyFreeFem as pyff
 
-from .ParamTransforms import MODULI_INDICES
+
+MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
 
 # TODO make it local
 tgv = 1e30
@@ -108,8 +109,8 @@ def processFFOutput(ff_output: dict):
     LCorrection, fLCorrection = evaluateMatrixAndRHS(ff_output["LCorrection"], f_bc)
 
     dim = M.shape[0]
-    Ks = np.zeros((len(MODULI_INDICES), dim, dim))
-    fKs = np.zeros((len(MODULI_INDICES), dim))
+    Ks = np.zeros((6, dim, dim))
+    fKs = np.zeros((6, dim))
     for idx, ss in enumerate(MODULI_INDICES):
         key = "K" + ss
         K, f = evaluateMatrixAndRHS(ff_output[key], f_bc)

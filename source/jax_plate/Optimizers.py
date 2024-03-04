@@ -1,11 +1,59 @@
+from collections import namedtuple
+from typing import Callable
+
 import jax
 import jax.numpy as jnp
-
 import numpy as np
 
-from collections import namedtuple
 
-from .ParamTransforms import FixedParameterFunction
+class FixedParameterFunction:
+    """
+        Wrapper around existing parameter transform function,
+        which fixes one of several parameters to constant value.
+    """
+    def __init__(self, function: Callable,
+                 param_size: int,
+                 fixed_indices: int | tuple,
+                 fixed_values: float | tuple):
+        """
+        Constructor method.
+
+        Parameters
+        ----------
+        function : Callable
+            Function to be modified.
+        param_size : int
+            Overall amount of parameters of function.
+        fixed_indices : int | tuple
+            Fixed parameters' indexes, starting from 0.
+        fixed_values : float | tuple
+            Values to be fixed.
+
+        Returns
+        -------
+        None
+        """
+        self.func = function
+        self.array = np.zeros(param_size)
+        self.free_idx = [i for i in range(param_size)]
+
+        if isinstance(fixed_indices, int) or isinstance(fixed_values, float):
+            assert isinstance(fixed_indices, int), f'got {type(fixed_indices)}'
+            assert isinstance(fixed_values, float), f'got {type(fixed_values)}'
+            self.array[fixed_indices] = fixed_values
+            self.free_idx.remove(fixed_indices)
+        else:
+            assert len(fixed_indices) == len(fixed_values)
+            for i, idx in enumerate(fixed_indices):
+                self.array[idx] = fixed_values[i]
+                self.free_idx.remove(idx)
+
+        self.free_idx = jnp.array(self.free_idx)
+
+    def __call__(self, params, *args):
+        modified_params = jnp.array(self.array)
+        modified_params = modified_params.at[self.free_idx].set(params)
+        return self.func(modified_params, *args)
 
 
 @jax.jit
