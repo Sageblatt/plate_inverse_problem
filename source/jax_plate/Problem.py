@@ -84,6 +84,7 @@ class Problem:
             raise ValueError('Cannot create a Problem object without arguments.')
 
         self.n_cpu = cpu
+
         # Branch for creation without spath arg
         if spath is None:
             if None in (geometry, accel, material):
@@ -294,13 +295,13 @@ class Problem:
         self.indices = np.vstack((rows, cols), dtype=np.int32).T.view(StaticNdArrayWrapper)
 
     @functools.cache
-    def getFRFunction(self):
+    def getFRFunction(self) -> Callable:
         """
         Creates a function to evaluate AFC.
 
         Returns
         -------
-        callable
+        Callable
             Function that takes array of frequencies `omega` [Hz] and the
             parameters `theta` and returns the FR array of complex amplitude in
             test point.
@@ -532,9 +533,8 @@ class Problem:
         t_end = perf_counter()
         elapsed = (t_end - t_start) / 60
 
-        date_str = strftime("%d_%m_%Y_%H_%M_%S", gmtime())
-
         if uid is None:
+            date_str = strftime("%d_%m_%Y_%H_%M_%S", gmtime())
             full_str = case_name + date_str
 
         else:
@@ -552,7 +552,7 @@ class Problem:
                 if isinstance(s, str):
                     return s
 
-                return np.array2string(np.array(s), separator=', ')
+                return np.array2string(np.array(s), separator=', ', precision=5)
 
             comp_str = ''
             if compression[0]:
@@ -597,12 +597,11 @@ class Problem:
 
         return K_real, K_imag, self.MInertia
 
-    def getLossFunction(
-        self,
-        frequencies: jax.Array,
-        reference_fr: jax.Array,
-        func_type: str # Available options are: MSE, RMSE, MSE_AFC, MSE_LOG_AFC
-    ) -> Callable:
+    # Available `func_type`s are: MSE, RMSE, MSE_AFC, MSE_LOG_AFC
+    def getLossFunction(self,
+                        frequencies: jax.Array,
+                        reference_fr: jax.Array,
+                        func_type: str) -> Callable:
         assert frequencies.shape[0] == reference_fr.shape[0]
         fr_function = self.getFRFunction()
 
