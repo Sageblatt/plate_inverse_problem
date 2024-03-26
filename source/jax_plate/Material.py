@@ -395,9 +395,7 @@ class SymmetricalSOL(SOL):
                  G12: float | None = None,
                  nu12: float | None = None,
                  beta: float | None = None):
-        super().__init__(density, E1, E1, G12, nu12, beta)
-
-        self.angles = np.array(angles)
+        super().__init__(density, angles, E1, E1, G12, nu12, beta)
 
     @property
     def E2(self):
@@ -406,6 +404,9 @@ class SymmetricalSOL(SOL):
     @E2.setter
     def E2(self, val):
         self.E1 = val
+
+    def _get_param_tuple(self) -> tuple:
+        return (self.E1, self.G12, self.nu12, self.beta)
 
     def get_transform(self, h: float) -> Callable:
         _mat = self._Q_to_D_matrix
@@ -480,8 +481,8 @@ def get_material(main_arg: str | float | int | dict,
                                        f'{fpath}.')
 
         else:
-            raise ValueError(f'Could not find file {main_arg}.json '
-                             'in `materials` folder.')
+            raise ValueError(f'Could not find file {main_arg} or '
+                             'such material in `materials` folder.')
 
     elif isinstance(main_arg, (float, int)):
         density = float(main_arg)
