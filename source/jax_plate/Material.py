@@ -310,7 +310,9 @@ class SOL(Orthotropic):
         self.angles = np.array(angles)
 
     def get_save_dict(self):
-        return super().get_save_dict() | {'angles': list(self.angles)}
+        sup_dict = super().get_save_dict()
+        return ({x: sup_dict[x] for x in sup_dict if x != '_Q_to_D_matrix'} |
+                {'angles': list(self.angles)})
 
     @functools.cached_property
     def _Q_to_D_matrix(self):
