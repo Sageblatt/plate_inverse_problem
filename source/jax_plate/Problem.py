@@ -405,7 +405,7 @@ class Problem:
                      arg0: npt.ArrayLike,
                      loss_type: str,
                      optimizer: str,
-                     compression: tuple[bool, int] = (False, 0),
+                     compression: list[bool, int] = (False, 0),
                      comp_alg: int = 1,
                      ref_fr: tuple[np.ndarray, np.ndarray] = None,
                      use_rel: bool = False,
@@ -447,7 +447,7 @@ class Problem:
                 See jax_plate.Optimizers.optimize_gd.
                 - 'de', differential evolution algorithm.
                 See scipy.optimize.differential_evolution.
-        compression : tuple[bool, int], optional
+        compression : list[bool, int], optional
             A tuple, in which the first element defines whether a compression
             algorithm for reference frequency response will be used or not.
             The second element defines amount of points in the dataset after
@@ -569,9 +569,10 @@ class Problem:
         if report:
             rel_err1 = 'Unknown'
             rel_err2 = 'Unknown'
-            if getattr(self, 'parameters', None) is not None and arg0.ndim != 2:
+            if getattr(self, 'parameters', None) is not None:
                 params0 = np.array(self.parameters)
-                rel_err1 = (params0 - np.array(x0_bds)) / params0
+                if arg0.ndim != 2:
+                    rel_err1 = (params0 - np.array(x0_bds)) / params0
                 rel_err2 = (params0 - np.array(result.x)) / params0
 
             def a2s(s):
