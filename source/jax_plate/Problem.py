@@ -9,6 +9,7 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import numpy.typing as npt
+from scipy.optimize import differential_evolution
 
 from jax_plate.Accelerometer import Accelerometer, AccelerometerParams
 from jax_plate.Material import Material, get_material
@@ -400,28 +401,32 @@ class Problem:
         fr_func = self.getFRFunction()
         return fr_func(freqs, params)
 
-    def solveInverseLocal(self, x0: npt.ArrayLike,
-                          loss_type: str,
-                          optimizer: str,
-                          compression: tuple[bool, int] = (False, 0),
-                          comp_alg: int = 1,
-                          ref_fr: tuple[np.ndarray, np.ndarray] = None,
-                          use_rel: bool = False,
-                          report: bool = True,
-                          log: bool = True,
-                          case_name: str = '',
-                          uid: str = None,
-                          extra_info: str = '',
-                          **opt_kwargs) -> optResult:
+    def solveInverse(self,
+                     arg0: npt.ArrayLike,
+                     loss_type: str,
+                     optimizer: str,
+                     compression: tuple[bool, int] = (False, 0),
+                     comp_alg: int = 1,
+                     ref_fr: tuple[np.ndarray, np.ndarray] = None,
+                     use_rel: bool = False,
+                     report: bool = True,
+                     log: bool = True,
+                     case_name: str = '',
+                     uid: str = None,
+                     extra_info: str = '',
+                     **opt_kwargs) -> optResult:
         """
-        Solve the local inverse problem for given initial guess.
+        Solve the inverse problem for given initial guess or bounds.
 
         Parameters
         ----------
-        x0 : numpy.typing.ArrayLike
-            Initial guess for each parameter. If `use_rel` argument is `True`
+        arg0 : numpy.typing.ArrayLike
+            Array of initial guesses or bounds for each parameter.
+            If array has 1 dimension `arg0` is treated as array of
+            initial guesses. If `use_rel` argument is `True`
             then `x0` describes a relative difference between initial guess and
             parameters provided in self.parameters.
+            If array has 2 dimensions `arg0` is treated as array of bounds.
         loss_type : str
             Type of a loss to be optimized. Available options are:
                 - `MSE`, mean squared error.
@@ -432,14 +437,16 @@ class Problem:
                 amplitudes is used.
         optimizer : str
             Type of an optimizing algorithm to be used. Available options are:
-                - `trust_region`, second-order optimizer.
+                - `trust_region` or `tr`, second-order optimizer.
                 See jax_plate.Optimizers.solve_trust_region.
-                - `coord_descent`, coordinate descent.
+                - `coord_descent` or `cd`, coordinate descent.
                 See jax_plate.Optimizers.optimize_cd.
-                - `coord_descent_mem`, memory-efficient version of coordinate
+                - `coord_descent_mem` or `cd_mem`, memory-efficient version of coordinate
                 descent. See jax_plate.Optimizers.optimize_cd_mem.
-                - `grad_descent`, gradient descent optimization.
+                - `grad_descent` or `gd`, gradient descent optimization.
                 See jax_plate.Optimizers.optimize_gd.
+                - 'de', differential evolution algorithm.
+                See scipy.optimize.differential_evolution.
         compression : tuple[bool, int], optional
             A tuple, in which the first element defines whether a compression
             algorithm for reference frequency response will be used or not.
@@ -453,7 +460,8 @@ class Problem:
             Reference frequency response. If `None` the value
             from self.reference_fr will be used. The default is None.
         use_rel : bool, optional
-            See `x0` argument description. The default is False.
+            See `arg0` argument description. If `arg0` defines bounds does
+            nothing. The default is False.
         report : bool, optional
             Generate human-readable report with optimization parameters.
             The default is True.
@@ -502,34 +510,45 @@ class Problem:
 
         loss = self.getLossFunction(ref_fr[0], ref_fr[1], loss_type)
 
-        if use_rel:
-            if getattr(self, 'parameters', None) is None:
-                raise ValueError('Cannot use `x0` as relative coefficients of '
-                                 'correction as Problem object has no '
-                                 '`parameters` attribute.')
+        arg0 = np.array(arg0)
 
+        if arg0.ndim == 1:
+            if use_rel:
+                if getattr(self, 'parameters', None) is None:
+                    raise ValueError('Cannot use `arg0` as relative coefficients of '
+                                     'correction as Problem object has no '
+                                     '`parameters` attribute.')
+
+                else:
+                    x0_bds = jnp.array(self.parameters) * (jnp.array(arg0) + 1)
             else:
-                x0 = jnp.array(self.parameters) * (jnp.array(x0) + 1)
-        else:
-            x0 = jnp.array(x0)
+                x0_bds = jnp.array(arg0)
 
-        if optimizer == 'trust_region':
+        elif arg0.ndim == 2:
+            x0_bds = arg0
+
+        else:
+            raise ValueError('Invalid shape of `arg0` argument.')
+
+        if optimizer in ('trust_region', 'tr'):
             optimizer_func = optimize_trust_region
 
-        elif optimizer == 'coord_descent':
+        elif optimizer in ('coord_descent', 'cd'):
             optimizer_func = optimize_cd
 
-        elif optimizer == 'coord_descent_mem':
+        elif optimizer in ('coord_descent_mem', 'cd_mem'):
             optimizer_func = optimize_cd_mem2
 
-        elif optimizer == 'grad_descent':
+        elif optimizer in ('grad_descent', 'gd'):
             optimizer_func = optimize_gd
 
+        elif optimizer == 'de':
+            optimizer_func = differential_evolution
         else:
             raise ValueError(f'Optimizer type `{optimizer}` is not supported!')
 
         t_start = perf_counter()
-        result = optimizer_func(loss, x0, **opt_kwargs)
+        result = optimizer_func(loss, x0_bds, **opt_kwargs)
         t_end = perf_counter()
         elapsed = (t_end - t_start) / 60
 
@@ -540,12 +559,19 @@ class Problem:
         else:
             full_str = case_name + uid
 
+        if optimizer == 'de': # For compatibility with Optimizers.optResult
+            setattr(result, 'f', result.fun)
+            setattr(result, 'x_history', result.population)
+            setattr(result, 'f_history', [-1.0])
+            setattr(result, 'status', result.message)
+            setattr(result, 'niter', result.nit)
+
         if report:
             rel_err1 = 'Unknown'
             rel_err2 = 'Unknown'
-            if getattr(self, 'parameters', None) is not None:
+            if getattr(self, 'parameters', None) is not None and arg0.ndim != 2:
                 params0 = np.array(self.parameters)
-                rel_err1 = (params0 - np.array(x0)) / params0
+                rel_err1 = (params0 - np.array(x0_bds)) / params0
                 rel_err2 = (params0 - np.array(result.x)) / params0
 
             def a2s(s):
@@ -559,10 +585,11 @@ class Problem:
                 comp_str = (f'Using compression algorithm {comp_alg} with '
                             f'{compression[1]} points.\n')
 
+            s_pa_bd = 'parameters' if arg0.ndim == 1 else 'bounds'
 
             rep_str = (f'{self.accelerometer}\n{self.material}\n{self.geometry}\n'
                        + extra_info + comp_str +
-                       f'Starting parameters: {a2s(x0)}.\n'
+                       f'Starting {s_pa_bd}: {a2s(x0_bds)}.\n'
                        f'With relative error: {a2s(rel_err1)}.\n'
                        f'Initial loss: {result.f_history[0]}.\n'
                        f'Elapsed time: {elapsed} min.\n'
@@ -587,6 +614,13 @@ class Problem:
                                 full_str), x=x_, f=f_, k=k_)
 
         return result
+
+    def solveInverseLocal(self, *args, **kwargs):
+        """
+        Alias for `Problem.solveInverse`. Provides compatibility
+        with old scripts.
+        """
+        return self.solveInverse(*args, **kwargs)
 
     def getSolutionMatrices(self, D, beta):
         loss_moduli = beta * D
