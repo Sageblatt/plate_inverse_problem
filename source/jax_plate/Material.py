@@ -19,7 +19,8 @@ ATYPES = {'isotropic': {'E', 'G', 'beta'},
           'orthotropic_d4': {'E1', 'E2', 'G12', 'nu12',
                              'b1', 'b2', 'b3', 'b4'}, # each modulus has own loss factor
           'sol': {'E1', 'E2', 'G12', 'nu12', 'beta', # simple orthotropic laminate with identical unidirectional layers
-                              'angles'} # tuple of angles in DEGREES for each lamina, angles are counter-clockwise, starting from the lowest
+                              'angles'}, # tuple of angles in DEGREES for each lamina, angles are counter-clockwise, starting from the lowest
+          'symm_sol': {'E1', 'G12', 'nu12', 'beta', 'angles'}
           }
 
 
@@ -386,16 +387,61 @@ class SOL(Orthotropic):
 
         return Partial(_transform, _M=A)
 
+class SymmetricalSOL(SOL):
+    """Simple Orthotropic Laminate with layers with E1=E2"""
+    def __init__(self, density: float,
+                 angles: tuple | list,
+                 E1: float | None = None,
+                 G12: float | None = None,
+                 nu12: float | None = None,
+                 beta: float | None = None):
+        super().__init__(density, E1, E1, G12, nu12, beta)
 
-def get_material(main_arg: str | float | dict, atype: str = None, **kwargs) -> Material:
+        self.angles = np.array(angles)
+
+    @property
+    def E2(self):
+        return self.E1
+
+    @E2.setter
+    def E2(self, val):
+        self.E1 = val
+
+    def get_transform(self, h: float) -> Callable:
+        _mat = self._Q_to_D_matrix
+
+        A = np.array(_mat.evalf(subs={'h': h}), dtype=np.float64)
+
+        def _transform(params, *args, _M):
+            E1 = params[0]
+            E2 = params[0]
+            G12 = params[1]
+            nu12 = params[2]
+            beta = params[3]
+
+            den = 1 - E1 / E2 * nu12 ** 2
+            Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
+            Ds = _M @ Q
+            betas = jnp.full_like(Ds, beta)
+            return Ds, betas
+
+        return Partial(_transform, _M=A)
+
+
+def get_material(main_arg: str | float | int | dict,
+                 atype: str = None, **kwargs) -> Material:
     """
     Function to create Material object with specific type.
 
     Parameters
     ----------
     main_arg : str | float | dict
-        Name of the material to search for in `materials` folder or a float
-        number representing density or a dict with all material parameters.
+        One of the following:
+            1) Name of the material to search for in `materials` folder
+            (without `.json` extension)
+            2) A float or int number representing density
+            3) A dict with all material parameters
+            4) Path to `.json` file with material properties.
     atype : str
         Type of anisotropy, required when `main_arg` is density.
     **kwargs
@@ -410,8 +456,15 @@ def get_material(main_arg: str | float | dict, atype: str = None, **kwargs) -> M
     params = None
 
     if isinstance(main_arg, str):
-        fpath = os.path.join(get_jax_plate_dir(), 'materials',
-                             main_arg + '.json')
+        fname, ext = os.path.splitext(main_arg)
+        if ext == '.json':
+            fpath = os.path.abspath(main_arg)
+        elif ext == '':
+            fpath = os.path.join(get_jax_plate_dir(), 'materials',
+                                 main_arg + '.json')
+        else:
+            raise ValueError('Unsupported extinsion for material properties '
+                             f'file: `{ext}`.')
 
         if os.path.exists(fpath):
             with open(fpath, 'r') as file:
@@ -430,8 +483,8 @@ def get_material(main_arg: str | float | dict, atype: str = None, **kwargs) -> M
             raise ValueError(f'Could not find file {main_arg}.json '
                              'in `materials` folder.')
 
-    elif isinstance(main_arg, float):
-        density = main_arg
+    elif isinstance(main_arg, (float, int)):
+        density = float(main_arg)
         if not isinstance(atype, str):
             raise ValueError('Atype argument was not provided.')
         params = kwargs
@@ -474,8 +527,11 @@ def get_material(main_arg: str | float | dict, atype: str = None, **kwargs) -> M
     elif atype == 'orthotropic_d4':
         return OrthotropicD4(density, **params)
 
-    elif atype == 'sol':
+    elif atype in ('sol', 'orth_lam_simple'):
         return SOL(density, **params)
+
+    elif atype == 'symm_sol':
+        return SymmetricalSOL(density, **params)
 
     else: # shouldn't reach there
         raise NotImplementedError()
