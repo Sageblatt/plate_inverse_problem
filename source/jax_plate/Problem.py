@@ -287,13 +287,9 @@ class Problem:
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
 
-        sz = self.fM.size
         rs, cs = nz_mask
+        self.indices = np.vstack((rs, cs), dtype=np.int32).T.view(StaticNdArrayWrapper)
 
-        rows = np.concatenate((rs, rs, rs + sz, rs + sz))
-        cols = np.concatenate((cs, cs + sz, cs, cs + sz))
-
-        self.indices = np.vstack((rows, cols), dtype=np.int32).T.view(StaticNdArrayWrapper)
 
     @functools.cache
     def getFRFunction(self) -> Callable:
@@ -314,46 +310,27 @@ class Problem:
             # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
 
-            # transform is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
+            # transform is a function D_ij = D_ij(theta, omega)
             # theta is the set of parameters; see Materials.ATYPES
-            D, beta = transform(params, omega)
-            loss_moduli = beta * D
+            D = transform(params, omega)
 
-            # K_real = \sum K_ij*D_ij/(2.*e)
-            # K_imag = \sum K_ij*D_ij/(2.*e)
             # Ks are matrices from eq (4.1.7)
-            K_real = jnp.einsum(Ks, [0, ...], D, [0])
-            K_imag = jnp.einsum(Ks, [0, ...], loss_moduli, [0])
+            K = jnp.einsum(Ks, [0, ...], D, [0])
 
-            # f_imag = ..
             # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
-            fK_real = jnp.einsum(fKs, [0, ...], D, [0])
-            fK_imag = jnp.einsum(fKs, [0, ...], loss_moduli, [0])
+            fK = jnp.einsum(fKs, [0, ...], D, [0])
 
-            # Formulate system (A_real + i*A_imag)(u_real + i*u_imag) = (b_real + i*b_imag)
-            # and create matrix from blocks for real solution
-            # MInertia == rho*(M + 1/3 e^2 L) from
-            A_real = -(omega ** 2) * MInertia + K_real
-            A_imag = K_imag
-            b_real = -(omega ** 2) * fInertia + fK_real + fLoad
-            b_imag = fK_imag
+            # MInertia == rho*(M + 1/3 e^2 L)
+            A = -(omega ** 2) * MInertia + K
+            b = -(omega ** 2) * fInertia + fK + fLoad
 
-            # A = vstack(
-            #     (hstack((A_real, -A_imag)), hstack((-A_imag, -A_real)))
-            # )
-            data = jnp.concatenate((A_real, -A_imag, -A_imag, -A_real))
-            b = jnp.concatenate((b_real, -b_imag))
-
-            u = spsolve(data, indx, b, n_cpu=cpu)
+            u = spsolve(A, indx, b, n_cpu=cpu)
 
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18
-            u_in_test_point = jnp.array([interpolation_value_from_bc, 0.0]) +\
-            interpolation_vector @ u.reshape(  # real, imag
-                (-1, 2), order="F"
-            )
+            u_in_test_point = interpolation_value_from_bc + interpolation_vector @ u
 
-            return u_in_test_point[0] + 1j * u_in_test_point[1]
+            return u_in_test_point
 
 
         _solve_p = jax.tree_util.Partial(_solve,

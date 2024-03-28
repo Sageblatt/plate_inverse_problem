@@ -92,7 +92,7 @@ class Material(abc.ABC):
     def get_transform(h: float) -> Callable:
         """
         Returns a function that transforms elastic moduli into flexural rigity
-        matrix components D_ij and their loss factors beta_ij in the following
+        matrix components (complex moduli) D_ij in the following
         order: [11, 12, 16, 22, 26, 66]. May include frequency dependece,
         taking frequency omega as the second argument.
 
@@ -194,9 +194,8 @@ class Isotropic(Material):
             nu = E / (2.0 * G) - 1.0
             D = E * _h ** 3 / (12.0 * (1.0 - nu ** 2))
 
-            Ds = jnp.array([D, nu * D, 0.0, D, 0.0, D * (1.0 - nu)])
-            betas = jnp.full_like(Ds, beta)
-            return Ds, betas
+            Ds = jnp.array([D, nu * D, 0.0, D, 0.0, D * (1.0 - nu)]) * (1 + 1j * beta)
+            return Ds
 
         return Partial(_transform, _h=h)
 
@@ -236,10 +235,8 @@ class Orthotropic(Material):
             D12 = nu21*D11
             D22 = D11/E_ratio
 
-            Ds = jnp.array([D11, D12, 0.0, D22, 0.0, D66])
-            betas = jnp.full_like(Ds, beta)
-
-            return Ds, betas
+            Ds = jnp.array([D11, D12, 0.0, D22, 0.0, D66])  * (1 + 1j * beta)
+            return Ds
 
         return Partial(_transform, _h=h)
 
@@ -291,7 +288,7 @@ class OrthotropicD4(Material):
             D22 = D11/E_ratio
 
             Ds = jnp.array([D11, D12, 0.0, D22, 0.0, D66])
-            return jnp.real(Ds), jnp.tan(jnp.angle(Ds))
+            return Ds
 
         return Partial(_transform, _h=h)
 
@@ -383,9 +380,8 @@ class SOL(Orthotropic):
 
             den = 1 - E1 / E2 * nu12 ** 2
             Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
-            Ds = _M @ Q
-            betas = jnp.full_like(Ds, beta)
-            return Ds, betas
+            Ds = (_M @ Q)  * (1 + 1j * beta)
+            return Ds
 
         return Partial(_transform, _M=A)
 
@@ -424,9 +420,8 @@ class SymmetricalSOL(SOL):
 
             den = 1 - E1 / E2 * nu12 ** 2
             Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
-            Ds = _M @ Q
-            betas = jnp.full_like(Ds, beta)
-            return Ds, betas
+            Ds = (_M @ Q) * (1 + 1j * beta)
+            return Ds
 
         return Partial(_transform, _M=A)
 
