@@ -238,6 +238,7 @@ def spsolve(data, indices, b, permc_spec='COLAMD', use_umfpack=True, n_cpu=None,
 # 2 - b is vectorized
 # 3 - data and b are vectorized
 # 4 - data and b are vectorized, b has 2 batch dims # needed for jax.hessian
+# TODO: if dims are higher, extend existing axes with values, compute evrth, then return to original shape
 def _spsolve_batch(vals, axes, **kwargs):
     data, indices, b = vals
     ad, ai, ab = axes

@@ -315,7 +315,7 @@ class Problem:
             omega = 2.0 * np.pi * f
 
             # transform is a function D_ij = D_ij(theta), beta_ij = beta_ij(theta)
-            # theta is the set of parameters; for example see ParamTransforms.isotropic_to_full
+            # theta is the set of parameters; see Materials.ATYPES
             D, beta = transform(params, omega)
             loss_moduli = beta * D
 
@@ -572,8 +572,8 @@ class Problem:
             if getattr(self, 'parameters', None) is not None:
                 params0 = np.array(self.parameters)
                 if arg0.ndim != 2:
-                    rel_err1 = (params0 - np.array(x0_bds)) / params0
-                rel_err2 = (params0 - np.array(result.x)) / params0
+                    rel_err1 = (np.array(x0_bds) - params0 ) / params0
+                rel_err2 = (np.array(result.x) - params0) / params0
 
             def a2s(s):
                 if isinstance(s, str):
