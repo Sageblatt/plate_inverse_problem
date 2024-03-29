@@ -16,15 +16,11 @@ jax.config.update('jax_platform_name', 'cpu')
 jax.config.update("jax_enable_x64", True)
 
 
-def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, n_cpu, _mode):
+def _spsolve_abstract_eval(data, indices, b, *, n_cpu, _mode):
     if data.dtype != b.dtype:
         raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
     if not (jnp.issubdtype(indices.dtype, jnp.integer)):
         raise ValueError(f"index arrays must be integer typed; got {indices.dtype=}")
-    if permc_spec not in ['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']:
-        raise ValueError(f"{permc_spec=} not valid, must be one of "
-                         "['NATURAL', 'MMD_ATA', 'MMD_AT_PLUS_A', 'COLAMD']")
-    use_umfpack = bool(use_umfpack)
     if not isinstance(n_cpu, int):
         raise ValueError(f'invalid type of `n_cpu` argument, expected `int`, '
                          f'got {type(n_cpu)}')
@@ -41,22 +37,20 @@ def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, n_cpu, 
         raise NotImplementedError()
 
 
-def _parallel_loop_func(data, b, indx, permc_spec, use_umfpack):
+def _parallel_loop_func(data, b, indx):
     A = csr_matrix((data, indx.T), shape=(b.shape[0], b.shape[0]),
                                              dtype=b.dtype)
-    return linalg.spsolve(A, b, permc_spec=permc_spec,
-                               use_umfpack=use_umfpack).astype(b.dtype)
+    return linalg.spsolve(A, b).astype(b.dtype)
 
 
-def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu, _mode):
+def _spsolve_cpu_lowering(ctx, data, indices, b, n_cpu, _mode):
     args = [data, indices, b]
 
     def _callback(data, indices, b, **kwargs):
         if _mode == 0:
             A = csr_matrix((data, indices.T),
                            shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-            return (linalg.spsolve(A, b, permc_spec=permc_spec,
-                                 use_umfpack=use_umfpack).astype(b.dtype),)
+            return (linalg.spsolve(A, b).astype(b.dtype),)
 
         if n_cpu != 1:
             if n_cpu == 0:
@@ -66,28 +60,20 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu,
             pool = Pool(_n_cpu)
 
             if _mode == 1:
-                _pfunc = functools.partial(_parallel_loop_func, indx=indices,
-                                           b=b, permc_spec=permc_spec,
-                                           use_umfpack=use_umfpack)
+                _pfunc = functools.partial(_parallel_loop_func, indx=indices, b=b)
                 _res = pool.starmap(_pfunc, data)
                 res = np.array(_res, dtype=b.dtype)
             elif _mode == 2:
-                _pfunc = functools.partial(_parallel_loop_func, data=data, indx=indices,
-                                           permc_spec=permc_spec,
-                                           use_umfpack=use_umfpack)
+                _pfunc = functools.partial(_parallel_loop_func, data=data, indx=indices)
                 _res = pool.starmap(_pfunc, b)
                 res = np.array(_res, dtype=b.dtype)
             elif _mode == 3:
-                _pfunc = functools.partial(_parallel_loop_func, indx=indices,
-                                           permc_spec=permc_spec,
-                                           use_umfpack=use_umfpack)
+                _pfunc = functools.partial(_parallel_loop_func, indx=indices)
                 _res = pool.starmap(_pfunc, zip(data, b))
                 res = np.array(_res, dtype=b.dtype)
             elif _mode == 4: # lazy implementation, may be better without loop
                 res = []
-                _pfunc = functools.partial(_parallel_loop_func, indx=indices,
-                                           permc_spec=permc_spec,
-                                           use_umfpack=use_umfpack)
+                _pfunc = functools.partial(_parallel_loop_func, indx=indices)
                 for i in range(b.shape[0]):
                     _res = pool.starmap(_pfunc, zip(data, b[i]))
                     res.append(_res)
@@ -104,31 +90,26 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu,
                 for i in range(data.shape[0]):
                     A = csr_matrix((data[i, :], indices.T),
                                    shape=(b.shape[0], b.shape[0]), dtype=b.dtype)
-                    res[i, :] = linalg.spsolve(A, b, permc_spec=permc_spec,
-                                               use_umfpack=use_umfpack).astype(b.dtype)
+                    res[i, :] = linalg.spsolve(A, b).astype(b.dtype)
             elif _mode == 2:
                 res = np.zeros_like(b)
                 A = csr_matrix((data, indices.T),
                                shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
                 for i in range(b.shape[0]):
-                    res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
-                                               use_umfpack=use_umfpack).astype(b.dtype)
+                    res[i, :] = linalg.spsolve(A, b[i, :]).astype(b.dtype)
             elif _mode == 3:
                 res = np.zeros_like(b)
                 for i in range(b.shape[0]):
                     A = csr_matrix((data[i, :], indices.T),
                                    shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-                    res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
-                                               use_umfpack=use_umfpack).astype(b.dtype)
+                    res[i, :] = linalg.spsolve(A, b[i, :]).astype(b.dtype)
             elif _mode == 4:
                 res = np.zeros_like(b)
                 for i in range(b.shape[1]):
                     A = csr_matrix((data[i, :], indices.T),
                                    shape=(b.shape[2], b.shape[2]), dtype=b.dtype)
                     for j in range(b.shape[0]):
-                        res[j, i, :] = linalg.spsolve(A, b[j, i, :],
-                                                      permc_spec=permc_spec,
-                                                      use_umfpack=use_umfpack).astype(b.dtype)
+                        res[j, i, :] = linalg.spsolve(A, b[j, i, :]).astype(b.dtype)
             else:
                 raise NotImplementedError()
 
@@ -220,10 +201,9 @@ ad.primitive_transposes[_spsolve_p] = _spsolve_transpose
 mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
 
-def spsolve(data, indices, b, permc_spec='COLAMD', use_umfpack=True, n_cpu=None, _mode=0):
+def spsolve(data, indices, b, n_cpu=None, _mode=0):
     """A sparse direct solver, based on scipy.sparse.linalg.spsolve."""
-    return _spsolve_p.bind(data, indices, b, permc_spec=permc_spec, use_umfpack=use_umfpack,
-                           n_cpu=n_cpu,_mode=_mode)
+    return _spsolve_p.bind(data, indices, b, n_cpu=n_cpu, _mode=_mode)
 
 
 # Batching _mode`s:
