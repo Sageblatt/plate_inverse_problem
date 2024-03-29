@@ -44,7 +44,6 @@ def _spsolve_abstract_eval(data, indices, b, *, permc_spec, use_umfpack, n_cpu, 
 def _parallel_loop_func(data, b, indx, permc_spec, use_umfpack):
     A = csr_matrix((data, indx.T), shape=(b.shape[0], b.shape[0]),
                                              dtype=b.dtype)
-    A.eliminate_zeros()
     return linalg.spsolve(A, b, permc_spec=permc_spec,
                                use_umfpack=use_umfpack).astype(b.dtype)
 
@@ -56,7 +55,6 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu,
         if _mode == 0:
             A = csr_matrix((data, indices.T),
                            shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-            A.eliminate_zeros()
             return (linalg.spsolve(A, b, permc_spec=permc_spec,
                                  use_umfpack=use_umfpack).astype(b.dtype),)
 
@@ -106,14 +104,12 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu,
                 for i in range(data.shape[0]):
                     A = csr_matrix((data[i, :], indices.T),
                                    shape=(b.shape[0], b.shape[0]), dtype=b.dtype)
-                    A.eliminate_zeros()
                     res[i, :] = linalg.spsolve(A, b, permc_spec=permc_spec,
                                                use_umfpack=use_umfpack).astype(b.dtype)
             elif _mode == 2:
                 res = np.zeros_like(b)
                 A = csr_matrix((data, indices.T),
                                shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-                A.eliminate_zeros()
                 for i in range(b.shape[0]):
                     res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
                                                use_umfpack=use_umfpack).astype(b.dtype)
@@ -122,7 +118,6 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu,
                 for i in range(b.shape[0]):
                     A = csr_matrix((data[i, :], indices.T),
                                    shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-                    A.eliminate_zeros()
                     res[i, :] = linalg.spsolve(A, b[i, :], permc_spec=permc_spec,
                                                use_umfpack=use_umfpack).astype(b.dtype)
             elif _mode == 4:
@@ -130,7 +125,6 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, permc_spec, use_umfpack, n_cpu,
                 for i in range(b.shape[1]):
                     A = csr_matrix((data[i, :], indices.T),
                                    shape=(b.shape[2], b.shape[2]), dtype=b.dtype)
-                    A.eliminate_zeros()
                     for j in range(b.shape[0]):
                         res[j, i, :] = linalg.spsolve(A, b[j, i, :],
                                                       permc_spec=permc_spec,
