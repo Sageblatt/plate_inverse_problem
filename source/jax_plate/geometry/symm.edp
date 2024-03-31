@@ -18,8 +18,8 @@ real eps = 1e-8;
 // ny is the number of mesh nods on the short side
 // nAccel -- on the border of the area occupied by the accelerometer
 int ny = 3;
-int nx = 5*ny;
-int nAccel = 16;
+int nx = 15*ny;
+int nAccel = 4*ny;
 
 border C1(t=0., 1){x=0; y=Ly/2. - t*Ly; label=0;}
 border C2(t=0., 1){x=Lx*t; y=-Ly/2.; label=0;}
@@ -30,7 +30,7 @@ border C4(t=0., 1){x=(1-t)*Lx; y=Ly/2.; label=0;}
 //
 border CAccel(t=0., 2*pi){x=offsetAccelX + rAccel*cos(t); y=0 + rAccel*sin(t); label=0;}
 
-mesh Th = buildmesh(C1(ny) + C2(nx) + C3(ny) + C4(nx) + CAccel(nAccel));
+mesh Th = buildmesh(C1(3*ny) + C2(nx) + C3(3*ny) + C4(nx) + CAccel(nAccel));
 //savevtk("mesh.vtu", Th);
 
 // Source term
