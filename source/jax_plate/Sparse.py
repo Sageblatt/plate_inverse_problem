@@ -4,11 +4,10 @@ from multiprocessing import Pool, cpu_count
 
 import jax
 from jax import core, tree_util
-from jax.experimental import sparse
 from jax.interpreters import ad, batching, mlir, xla
 import jax.numpy as jnp
 import numpy as np
-from scipy.sparse import csr_matrix, linalg, coo_matrix, csc_matrix
+from scipy.sparse import coo_matrix, csc_matrix
 from scikits import umfpack
 
 
@@ -36,41 +35,50 @@ class SolverState:
         self.dtype = mat_dtype
         self.N = N
 
-        mat = coo_matrix((N, N), dtype=mat_dtype)
-        mat_T = mat.copy()
+        data = np.linspace(1.0, 42.0, indices.shape[0], dtype=mat_dtype)
+        self.mat = coo_matrix((data, (indices[:, 0], indices[:, 1])), (N, N),
+                              dtype=mat_dtype, copy=True).tocsc()
+        self.mat_T = coo_matrix((data, (indices[:, 1], indices[:, 0])), (N, N),
+                                dtype=mat_dtype, copy=True).tocsc()
 
-        data = np.full(indices.shape[0], 42, dtype=mat_dtype)
+        self.index = self.mat.indices
+        self.index_T = self.mat_T.indices
 
-        mat.data = data
-        mat_T.data = data
+        self.indptr = self.mat.indptr
+        self.indptr_T = self.mat_T.indptr
 
-        mat.row, mat.col = indices[:, 0], indices[:, 1]
-        mat_T.row, mat_T.col = indices[:, 1], indices[:, 0]
+        m1 = self.mat.tocoo()
+        m1_T = self.mat_T.tocoo()
 
-        mat = mat.tocsc()
-        mat_T = mat_T.tocsc()
+        coo_indices = np.vstack((m1.row, m1.col), dtype=np.int32).T
+        coo_indices_T = np.vstack((m1_T.row, m1_T.col), dtype=np.int32).T
 
-        self.mat = mat
-        self.mat_T = mat_T
+        helper = np.arange(0, indices.shape[0])
+        ind = np.where(np.equal(indices[:, None], coo_indices[None, :]))[1]
+        inv_mask = ind[np.where(np.diff(ind)==0)]
+        self.mask = np.copy(inv_mask)
+        self.mask[inv_mask] = helper
 
-        self.index = mat.indices
-        self.index_T = mat.indices
+        indices_T = indices[:, ::-1]
+        ind = np.where(np.equal(indices_T[:, None], coo_indices_T[None, :]))[1]
+        inv_mask_T = ind[np.where(np.diff(ind)==0)]
+        self.mask_T = np.copy(inv_mask_T)
+        self.mask_T[inv_mask_T] = helper
 
-        self.indptr = mat.indptr
-        self.indptr_T = mat.indptr
-
-        self.context.symbolic(mat)
-        self.transpose_context.symbolic(mat_T)
+        self.context.symbolic(self.mat)
+        self.transpose_context.symbolic(self.mat_T)
 
     def solve(self, data, b, transpose):
         if transpose:
             ctx = self.transpose_context
             indx = self.index_T
             indptr = self.indptr_T
+            data = data[self.mask_T]
         else:
             ctx = self.context
             indx = self.index
             indptr = self.indptr
+            data = data[self.mask]
 
         # numeric ---------------
         ctx.free_numeric()
@@ -91,26 +99,9 @@ class SolverState:
                                        ctx._symbolic,
                                        ctx.control, ctx.info)
 
-        # if status != UMFPACK_OK:
-        #     if status == UMFPACK_WARNING_singular_matrix:
-        #         warnings.warn('Singular matrix', UmfpackWarning)
-        #         break
-        #     elif status in (UMFPACK_ERROR_different_pattern,
-        #                     UMFPACK_ERROR_invalid_Symbolic_object):
-        #         # Try again.
-        #         warnings.warn('Recomputing symbolic', UmfpackWarning)
-        #         self.symbolic(mtx)
-        #         failCount += 1
-        #     else:
-        #         failCount += 100
-        # else:
-        #     break
-        # if failCount >= 2:
-        #     raise RuntimeError('%s failed with %s' % (self.funs.numeric,
-        #                                                umfStatus[status]))
         # -----------------------------------------
         sys = umfpack.UMFPACK_A
-        sol = np.zeros_like(b,)
+        sol = np.zeros_like(b)
         if ctx.isReal:
             status = ctx.funs.solve(sys, indptr, indx, data, sol, b,
                                     ctx._numeric, ctx.control, ctx.info)
@@ -118,62 +109,40 @@ class SolverState:
             mreal, mimag = data.real.copy(), data.imag.copy()
             sreal, simag = np.zeros_like(b, dtype=np.float64), np.zeros_like(b, dtype=np.float64)
             rreal, rimag = b.real.copy(), b.imag.copy()
-            # print(indptr.flags)
-            # print(indx.flags)
-            # print(mreal.flags)
-            # print(mimag.flags)
-            # print(sreal.flags)
-            # print(simag.flags)
-            # print(rreal.flags)
-            # print(rimag.flags)
             status = ctx.funs.solve(sys, indptr, indx,
                                     mreal, mimag, sreal, simag, rreal, rimag,
                                     ctx._numeric, ctx.control, ctx.info)
             sol.real, sol.imag = sreal, simag
 
-        # self.funs.report_info( self.control, self.info )
-        # pause()
-        # if status != UMFPACK_OK:
-        #     if status == UMFPACK_WARNING_singular_matrix:
-        #         ## Change inf, nan to zeros.
-        #         warnings.warn('Zeroing nan and inf entries...', UmfpackWarning)
-        #         sol[~np.isfinite(sol)] = 0.0
-        #     else:
-        #         raise RuntimeError('%s failed with %s' % (self.funs.solve,
-        #                                                    umfStatus[status]))
-        # econd = 1.0 / self.info[UMFPACK_RCOND]
-        # if econd > self.maxCond:
-        #     msg = '(almost) singular matrix! '\
-        #           + '(estimated cond. number: %.2e)' % econd
-        #     warnings.warn(msg, UmfpackWarning)
-
         return sol
 
     def matvec(self, mat, vec, transpose):
         if transpose:
+            mat = mat[self.mask_T]
             A = csc_matrix((mat, self.index_T, self.indptr_T),
                            shape=(vec.shape[0], vec.shape[0]))
         else:
+            mat = mat[self.mask]
             A = csc_matrix((mat, self.index, self.indptr),
                            shape=(vec.shape[0], vec.shape[0]))
         return A.dot(vec)
 
+
 def flatten_solver_state(obj):
-  children = (obj.N, obj.coo_indices, obj.dtype)
-  aux_data = None
-  return children, aux_data
+    children = (obj.N, obj.coo_indices, obj.dtype)
+    aux_data = None
+    return children, aux_data
 
 def unflatten_solver_state(aux_data, children):
-  # mat = children[0]
-  obj = SolverState(*children)
-  return obj
+    obj = SolverState(*children)
+    return obj
 
 tree_util.register_pytree_node(SolverState, flatten_solver_state, unflatten_solver_state)
 
 #---------------------
 
 # Abstract eval for both matvec and spsolve
-def _spsolve_abstract_eval(data, b, *, s_state, transpose=False, n_cpu=None, _mode=0):
+def _abstract_eval(data, b, *, s_state, transpose=False, n_cpu=None, _mode=0):
     if data.dtype != b.dtype:
         raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
     if not isinstance(n_cpu, int):
@@ -212,7 +181,7 @@ def _matvec_cpu_lowering(ctx, data, b, *, s_state, transpose, n_cpu, _mode):
         if _mode == 0:
             return (s_state.matvec(data, b, transpose),)
 
-        if n_cpu != 1:
+        if n_cpu != 1: # Multiprocessing is not functional
             if n_cpu == 0:
                 _n_cpu = cpu_count()
             else:
@@ -287,18 +256,13 @@ def _matvec_transpose(ct, data, v, **kwargs):
         kwargs['transpose'] = not kwargs['transpose']
         return data, matvec(data, ct, **kwargs)
     else:
-        # v = jnp.asarray(v)
-        # The following line does this, but more efficiently:
-        # return _coo_extract(row, col, jnp.outer(ct, v)), row, col, v
-        # return ct[row] * v[col], row, col, v
-        # raise NotImplementedError("matvec transpose with respect to mat")
         row, col = kwargs['s_state'].coo_indices[:, 0], kwargs['s_state'].coo_indices[:, 1]
-        return ct[row] * v[col], v
+        return ct[..., row] * v[..., col], v
 
 
 _matvec_p = core.Primitive('custom_matvec')
 _matvec_p.def_impl(functools.partial(xla.apply_primitive, _matvec_p))
-_matvec_p.def_abstract_eval(_spsolve_abstract_eval)
+_matvec_p.def_abstract_eval(_abstract_eval)
 ad.defjvp(_matvec_p, _matvec_jvp_mat, _matvec_jvp_vec)
 ad.primitive_transposes[_matvec_p] = _matvec_transpose
 mlir.register_lowering(_matvec_p, _matvec_cpu_lowering, platform='cpu')
@@ -409,7 +373,7 @@ def _spsolve_transpose(ct, data, b, **kwds):
 
 _spsolve_p = core.Primitive('cpu_spsolve')
 _spsolve_p.def_impl(functools.partial(xla.apply_primitive, _spsolve_p))
-_spsolve_p.def_abstract_eval(_spsolve_abstract_eval)
+_spsolve_p.def_abstract_eval(_abstract_eval)
 ad.defjvp(_spsolve_p, _spsolve_jvp_lhs, _spsolve_jvp_rhs)
 ad.primitive_transposes[_spsolve_p] = _spsolve_transpose
 mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
@@ -428,7 +392,7 @@ def spsolve(data, b, *, s_state, transpose=False, n_cpu=None, _mode=0):
 # 3 - data and b are vectorized
 # 4 - data and b are vectorized, b has 2 batch dims # needed for jax.hessian
 # TODO: if dims are higher, extend existing axes with values, compute evrth, then return to original shape
-def _spsolve_batch(vals, axes, **kwargs):
+def _batch_template(func, vals, axes, **kwargs):
     data, b = vals
     ad, ab = axes
     res = jnp.zeros_like(b)
@@ -459,8 +423,10 @@ def _spsolve_batch(vals, axes, **kwargs):
         raise NotImplementedError('Batching of spsolve with arguments shapes: '
                                   f'{data.shape=}, {b.shape=}')
 
-    res = spsolve(data, b, **kwargs)
+    res = func(data, b, **kwargs)
     return res, 0
 
-
+_spsolve_batch = functools.partial(_batch_template, spsolve)
 batching.primitive_batchers[_spsolve_p] = _spsolve_batch
+_matvec_batch = functools.partial(_batch_template, matvec)
+batching.primitive_batchers[_matvec_p] = _matvec_batch

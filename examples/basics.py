@@ -16,18 +16,18 @@ fr = p.solveForward(freq)
 
 p0 = [0.1, 0.1, 0.2]
 
-# res = p.solveInverseLocal(p0, 'MSE_LOG_AFC', 'grad_descent', ref_fr=[freq, fr], use_rel=True,
-#                           compression=(False, N), case_name='Example_',
-#                           extra_info='Running `basics.py` example.\n',
-#                           N_steps=2, h=0.001, f_min=1e-5)
+res = p.solveInverseLocal(p0, 'MSE_LOG_AFC', 'grad_descent', ref_fr=[freq, fr], use_rel=True,
+                          compression=(False, N), case_name='Example_',
+                          extra_info='Running `basics.py` example.\n',
+                          N_steps=2, h=0.001, f_min=1e-5)
 
-# hist = res.f_history
-# res = res.x
+hist = res.f_history
+res = res.x
 
 r1 = p.solveForward(freq, (np.array(p0) + 1)*p.parameters)
-# r2 = p.solveForward(freq, res)
+r2 = p.solveForward(freq, res)
 
 print(f'FR: {np.sum(np.abs(fr)):.4f}, expected: 341.9363')
 print(f'Initial: {np.sum(np.abs(r1)):.4f}, expected: expected: 91.7139')
-# print(f'After: {np.sum(np.abs(r2)):.4f}, expected: 90.8778')
-# print(f'F_hist: {np.sum(np.abs(hist)):.4f}, expected: 0.4389')
+print(f'After: {np.sum(np.abs(r2)):.4f}, expected: 91.7141')
+print(f'F_hist: {np.sum(np.abs(hist)):.4f}, expected: 0.4421')

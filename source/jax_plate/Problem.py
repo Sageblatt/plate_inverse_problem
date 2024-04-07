@@ -346,8 +346,7 @@ class Problem:
                                          solv_state=self.s_state,
                                          cpu=self.n_cpu)
 
-        # _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
-        _get_afc = jax.vmap(_solve_p, in_axes=(0, None))
+        _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
 
         return _get_afc
 
