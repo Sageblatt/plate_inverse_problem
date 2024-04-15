@@ -23,3 +23,5 @@ source/jax_plate/accelerometers/
 *.so
 
 source/jax_plate_lib/build/
+
+source/jax_plate_lib/cmake-build-debug/

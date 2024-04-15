@@ -1,6 +1,6 @@
 """Modified CPU version of jax.experimental.sparse.linalg.spsolve with batching"""
 import functools
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count
 
 import jax
 from jax import core
@@ -35,8 +35,9 @@ class SolverState:
 
         return self.state_size - 1
 
-    def solve():
-        pass
+    def solve(self, data, b, solver_num, transpose, n_cpu, _mode):
+        return self.state.solve(data, b, solver_num, transpose, n_cpu, _mode)
+
     def matvec():
         pass
 
@@ -97,7 +98,8 @@ def create_symbolic(N: int,
     perm = find_permutation(indices_T, coo_indices_T)
 
     res = _SOLVER_STATE.add_mat(mat, mat_T, coo_indices, perm)
-    return coo_indices, res
+    # return coo_indices, res
+    return (m1.row, m1.col), res
 
 
 # class SolverState:
@@ -244,6 +246,7 @@ def _matvec_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
     args = [data, b]
 
     def _callback(data, b, **kwargs):
+        print('MATVEC GOT CALLED')
         res = _SOLVER_STATE.matvec()
         # if _mode == 0:
         #     return (s_state.matvec(data, b, transpose),)
@@ -307,7 +310,7 @@ def _spsolve_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
     args = [data, b]
 
     def _callback(data, b, **kwargs):
-        res = _SOLVER_STATE.solve()
+        res = _SOLVER_STATE.solve(data, b, solver_num, transpose, n_cpu, _mode)
         # if _mode == 0:
         #     return (s_state.solve(data, b, transpose),)
 
@@ -375,6 +378,8 @@ mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
 def spsolve(data, b, *, solver_num: int, transpose=False, n_cpu=None, _mode=0):
     """A sparse direct solver, based on scipy.sparse.linalg.spsolve."""
+    if n_cpu == 0:
+        n_cpu = cpu_count()
     return _spsolve_p.bind(data, b, solver_num=solver_num,
                            transpose=transpose, n_cpu=n_cpu, _mode=_mode)
 

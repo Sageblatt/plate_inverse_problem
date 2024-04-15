@@ -7,7 +7,7 @@ acc = jp.Accelerometer.Accelerometer('AP1030')
 geom = jp.Geometry.Geometry('symm', acc, jp.Geometry.GeometryParams(100e-3, 20e-3, 2e-3, 10e-3, None))
 mat = jp.Material.get_material(7920.0, 'isotropic', E = 200*1e9, G = 75*1e9 , beta = .003)
 
-p = jp.Problem.Problem(geom, mat, acc, cpu=1)
+p = jp.Problem.Problem(geom, mat, acc)
 
 N = 50
 

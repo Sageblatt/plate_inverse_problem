@@ -8,6 +8,7 @@
 
 //#include "csc_matvec.h"
 #include "umfpack_interface.h"
+#include "omp.h"
 
 using std::vector;
 using std::array;
@@ -126,9 +127,9 @@ public:
 
         auto status = umfpack::symbolic(N, N, indptr_vec.data(), indices_vec.data(),
                                         (T*)NULL, &symbolics[symb_i], (double*)NULL, (double *)NULL);
-        cout << "Symbolic status: " << status << " at idx " << symb_i << endl;
-        cout << "Symbolic: " << symbolics[symb_i] << " is NULL: "
-        << (symbolics[symb_i] == (void*)NULL) << endl;
+//        cout << "Symbolic status: " << status << " at idx " << symb_i << endl;
+//        cout << "Symbolic: " << symbolics[symb_i] << " is NULL: "
+//        << (symbolics[symb_i] == (void*)NULL) << endl;
         if (status != UMFPACK_OK)
             throw std::runtime_error("Problems with umfpack::symbolic.");
     }
@@ -140,8 +141,6 @@ public:
                                              const py::bool_& arg_transpose,
                                              const py::int_& arg_n_cpu,
                                              const py::int_& arg_mode) {
-        cout << "Called solve with types: " << typeid(T).name()
-        << ' ' << typeid(I).name() << endl;
         auto* data = get_arr_ptr(arg_data);
         auto* b = get_arr_ptr(arg_b);
 
@@ -157,40 +156,131 @@ public:
         if (transpose)
             sys = UMFPACK_Aat;
 
-//        auto res = vector<T>(arg_b.size());
-        auto b_size = arg_b.size();
-        py::array_t<T, py::array::c_style> res({b_size});
+        ShapeContainer res_shape;
+
+        size_t b_shape_0 = arg_b.shape(0);
+        size_t data_shape_0 = arg_data.shape(0);
+        size_t mat_N, data_shape_1, b_shape_1, b_shape_2, data_N;
+        switch (mode) {
+            case 0:
+                mat_N = b_shape_0;
+                data_N = arg_data.shape(0);
+                res_shape = ShapeContainer({mat_N});
+                break;
+
+            case 1:
+                data_shape_1 = arg_data.shape(1);
+                data_N = data_shape_1;
+                mat_N = b_shape_0;
+                res_shape = ShapeContainer({data_shape_0, mat_N});
+                break;
+
+            case 2:
+                data_N = data_shape_0;
+                b_shape_1 = arg_b.shape(1);
+                mat_N = b_shape_1;
+                res_shape = ShapeContainer({b_shape_0, mat_N});
+                break;
+
+            case 3:
+                data_shape_1 = arg_data.shape(1);
+                data_N = data_shape_1;
+                b_shape_1 = arg_b.shape(1);
+                mat_N = b_shape_1;
+                res_shape = ShapeContainer({b_shape_0, mat_N});
+                break;
+
+            case 4:
+                data_shape_1 = arg_data.shape(1);
+                data_N = data_shape_1;
+                b_shape_1 = arg_b.shape(1);
+                b_shape_2 = arg_b.shape(2);
+                mat_N = b_shape_2;
+                res_shape = ShapeContainer({b_shape_0, b_shape_1, mat_N});
+                break;
+
+            default:
+                throw std::runtime_error("Invalid `mode` argument in InnerState::solve().");
+        }
+
+        py::array_t<T, py::array::c_style> res(res_shape);
         auto res_ptr = get_arr_ptr(res);
 
-        cout << "1" << endl;
+        omp_set_num_threads(n_cpu);
+        py::gil_scoped_release rel;
+
         if (mode == 0) {
             void* numeric;
             int s;
-            double contr[UMFPACK_CONTROL];
-            umfpack_zi_defaults(contr);
-            contr[UMFPACK_PRL] = 10.0;
-            //umfpack_zi_report_control(contr);
-            cout << "Symb in solve: " << symbolics[num] << endl;
-//            umfpack::report_symbolic<T, I>(symbolics[num], contr);
-
-            s = umfpack::numeric(Ap.data(), Ai.data(), data, symbolics[num],
+            umfpack::numeric(Ap.data(), Ai.data(), data, symbolics[num],
                              &numeric, (double *)NULL, (double *)NULL);
-            cout << "3 " << s << " num: " << num << " idx size: " << Ap.size()
-            << ' ' << Ai.size() << endl;
-            UMFPACK_OK;
+
             s = umfpack::solve(sys, Ap.data(), Ai.data(), data,
                            res_ptr, b, numeric, (double*)NULL, (double*)NULL);
-            cout << "4 " << s << endl;
-            if (s != 0)
+            if (s != UMFPACK_OK)
                 throw std::runtime_error("Did not solve. Abort.");
             umfpack::free_numeric<T, I>(&numeric);
+        } else if (mode == 1) {
+            #pragma omp parallel for
+            for (auto i = 0; i < data_shape_0; i++) {
+                void* numeric;
+                int s;
+                umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
+                                 &numeric, (double *)NULL, (double *)NULL);
+
+                s = umfpack::solve(sys, Ap.data(), Ai.data(), &data[data_N * i],
+                                   &res_ptr[mat_N * i], b, numeric, (double*)NULL, (double*)NULL);
+                if (s != UMFPACK_OK)
+                    throw std::runtime_error("Did not solve. Abort.");
+                umfpack::free_numeric<T, I>(&numeric);
+            }
+        } else if (mode == 2) {
+            #pragma omp parallel for
+            for (auto i = 0; i < b_shape_0; i++) {
+                void* numeric;
+                int s;
+                umfpack::numeric(Ap.data(), Ai.data(), data, symbolics[num],
+                                 &numeric, (double *)NULL, (double *)NULL);
+
+                s = umfpack::solve(sys, Ap.data(), Ai.data(), data,
+                                   &res_ptr[mat_N * i], &b[mat_N * i], numeric, (double*)NULL, (double*)NULL);
+                if (s != UMFPACK_OK)
+                    throw std::runtime_error("Did not solve. Abort.");
+                umfpack::free_numeric<T, I>(&numeric);
+            }
+        } else if (mode == 3) {
+            #pragma omp parallel for
+            for (auto i = 0; i < data_shape_0; i++) {
+                void* numeric;
+                int s;
+                umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
+                                 &numeric, (double *)NULL, (double *)NULL);
+
+                s = umfpack::solve(sys, Ap.data(), Ai.data(), &data[data_N * i],
+                                   &res_ptr[mat_N * i], &b[mat_N * i], numeric, (double*)NULL, (double*)NULL);
+                if (s != UMFPACK_OK)
+                    throw std::runtime_error("Did not solve. Abort.");
+                umfpack::free_numeric<T, I>(&numeric);
+            }
+        } else if (mode == 4) {
+            for (auto j = 0; j < b_shape_0; j++) {
+                #pragma omp parallel for
+                for (auto i = 0; i < b_shape_1; i++) {
+                    void* numeric;
+                    int s;
+                    umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
+                                     &numeric, (double *)NULL, (double *)NULL);
+
+                    auto idx = mat_N * (i + j * b_shape_1);
+                    s = umfpack::solve(sys, Ap.data(), Ai.data(), &data[data_N * i],
+                                       &res_ptr[idx], &b[idx], numeric, (double*)NULL, (double*)NULL);
+                    if (s != UMFPACK_OK)
+                        throw std::runtime_error("Did not solve. Abort.");
+                    umfpack::free_numeric<T, I>(&numeric);
+                }
+            }
         }
-        cout << "2" << endl;
-
-
-//        auto sz = (ssize_t)res.size();
-//        auto shape = ShapeContainer({sz});
-//        auto ret = py::array_t(shape, res.data());
+        py::gil_scoped_acquire acq;
         return res;
     }
 
