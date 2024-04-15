@@ -151,7 +151,6 @@ namespace umfpack {
 
     template <class T, class I>
     void free_numeric(void** Numeric) {
-        cout << typeid(T).name() << ' ' << typeid(I).name() << endl;
         if constexpr (std::is_same_v<T, double> and std::is_same_v<I, int32_t>)
             umfpack_di_free_numeric(Numeric);
         else if constexpr (std::is_same_v<T, double> and std::is_same_v<I, int64_t>)
