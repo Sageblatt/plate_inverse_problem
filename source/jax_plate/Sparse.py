@@ -3,146 +3,214 @@ import functools
 from multiprocessing import Pool, cpu_count
 
 import jax
-from jax import core, tree_util
+from jax import core
 from jax.interpreters import ad, batching, mlir, xla
 import jax.numpy as jnp
 import numpy as np
 from scipy.sparse import coo_matrix, csc_matrix
-from scikits import umfpack
+
+from jax_plate.jax_plate_lib import InnerState
 
 
 # Ensure that jax uses CPU
 jax.config.update('jax_platform_name', 'cpu')
 jax.config.update("jax_enable_x64", True)
 
+class SolverState:
+    def __init__(self):
+        self.state = InnerState()
+        self.patterns = []
+        self.permutations = []
+
+    @property
+    def state_size(self):
+        return len(self.patterns)
+
+    def add_mat(self, mat, mat_T, indices, permutation) -> int:
+        self.patterns.append(indices.copy())
+        self.permutations.append(permutation.copy())
+
+        self.state.add_mat(mat.shape[0], mat.indices, mat.indptr,
+                           mat_T.indices, mat.indptr, permutation, mat.data)
+
+        return self.state_size - 1
+
+    def solve():
+        pass
+    def matvec():
+        pass
+
+
+_SOLVER_STATE = SolverState()
+
+def find_permutation(arr1: np.ndarray, arr2: np.ndarray) -> np.ndarray:
+    """
+    Finds numpy mask array such that `arr1[find_permutation(arr1, arr2)]`
+    equals `arr2`. May give wrong results if permutation is not unique.
+
+    Parameters
+    ----------
+    arr1 : np.ndarray
+        Array with shape (N, 2).
+    arr2 : np.ndarray
+        Array with shape (N, 2).
+
+    Returns
+    -------
+    mask : np.ndarray
+        Masking array.
+
+    """
+    assert arr1.shape == arr2.shape
+    assert arr1.shape[1] == 2
+
+    ind = np.where(np.equal(arr2[:, None], arr1[None, :]))[1]
+    mask = ind[np.where(np.diff(ind)==0)]
+    return np.array(mask, dtype=arr1.dtype)
+
 FAMILIES = {(np.float64, np.int32): 'di',
             (np.float64, np.int64): 'dl',
             (np.complex128, np.int32): 'zi',
             (np.complex128, np.int64): 'zl'}
 
-class SolverState:
-    def __init__(self, N: int, indices: np.ndarray, mat_dtype):
-        fam_idx = (mat_dtype, indices.dtype.type)
-        if not fam_idx in FAMILIES:
-            raise TypeError(f'Invalid dtypes of arguments: got {fam_idx=}, '
-                            f'expected one of {FAMILIES.keys()}')
+def create_symbolic(N: int,
+                    indices: np.ndarray[np.int32 | np.int64],
+                    mat_dtype: np.dtype) -> (np.ndarray, int):
+    fam_idx = (mat_dtype, indices.dtype.type)
+    if not fam_idx in FAMILIES:
+        raise TypeError(f'Invalid dtypes of arguments: got {fam_idx=}, '
+                        f'expected one of {FAMILIES.keys()}')
 
-        fam = FAMILIES[fam_idx]
-        self.context = umfpack.UmfpackContext(fam)
-        self.transpose_context = umfpack.UmfpackContext(fam)
+    data = np.linspace(1.0, 42.0, indices.shape[0], dtype=mat_dtype)
+    mat = coo_matrix((data, (indices[:, 0], indices[:, 1])), (N, N),
+                     dtype=mat_dtype, copy=True).tocsc()
+    mat_T = coo_matrix((data, (indices[:, 1], indices[:, 0])), (N, N),
+                       dtype=mat_dtype, copy=True).tocsc()
 
-        self.coo_indices = indices
-        self.dtype = mat_dtype
-        self.N = N
+    m1 = mat.tocoo()
+    m1_T = mat_T.tocoo()
 
-        data = np.linspace(1.0, 42.0, indices.shape[0], dtype=mat_dtype)
-        self.mat = coo_matrix((data, (indices[:, 0], indices[:, 1])), (N, N),
-                              dtype=mat_dtype, copy=True).tocsc()
-        self.mat_T = coo_matrix((data, (indices[:, 1], indices[:, 0])), (N, N),
-                                dtype=mat_dtype, copy=True).tocsc()
+    coo_indices = np.vstack((m1.row, m1.col), dtype=indices.dtype).T
+    coo_indices_T = np.vstack((m1_T.row, m1_T.col), dtype=indices.dtype).T
 
-        self.index = self.mat.indices
-        self.index_T = self.mat_T.indices
+    indices_T = coo_indices[:, ::-1]
+    perm = find_permutation(indices_T, coo_indices_T)
 
-        self.indptr = self.mat.indptr
-        self.indptr_T = self.mat_T.indptr
-
-        m1 = self.mat.tocoo()
-        m1_T = self.mat_T.tocoo()
-
-        coo_indices = np.vstack((m1.row, m1.col), dtype=np.int32).T
-        coo_indices_T = np.vstack((m1_T.row, m1_T.col), dtype=np.int32).T
-
-        helper = np.arange(0, indices.shape[0])
-        ind = np.where(np.equal(indices[:, None], coo_indices[None, :]))[1]
-        inv_mask = ind[np.where(np.diff(ind)==0)]
-        self.mask = np.copy(inv_mask)
-        self.mask[inv_mask] = helper
-
-        indices_T = indices[:, ::-1]
-        ind = np.where(np.equal(indices_T[:, None], coo_indices_T[None, :]))[1]
-        inv_mask_T = ind[np.where(np.diff(ind)==0)]
-        self.mask_T = np.copy(inv_mask_T)
-        self.mask_T[inv_mask_T] = helper
-
-        self.context.symbolic(self.mat)
-        self.transpose_context.symbolic(self.mat_T)
-
-    def solve(self, data, b, transpose):
-        if transpose:
-            ctx = self.transpose_context
-            indx = self.index_T
-            indptr = self.indptr_T
-            data = data[self.mask_T]
-        else:
-            ctx = self.context
-            indx = self.index
-            indptr = self.indptr
-            data = data[self.mask]
-
-        # numeric ---------------
-        ctx.free_numeric()
-
-        assert ctx._symbolic is not None
-
-        if ctx.isReal:
-            mtx = data.copy()
-            status, ctx._numeric\
-                    = ctx.funs.numeric(indptr, indx, mtx,
-                                       ctx._symbolic,
-                                       ctx.control, ctx.info)
-        else:
-            real, imag = data.real.copy(), data.imag.copy()
-            status, ctx._numeric\
-                    = ctx.funs.numeric(indptr, indx,
-                                       real, imag,
-                                       ctx._symbolic,
-                                       ctx.control, ctx.info)
-
-        # -----------------------------------------
-        sys = umfpack.UMFPACK_A
-        sol = np.zeros_like(b)
-        if ctx.isReal:
-            status = ctx.funs.solve(sys, indptr, indx, data, sol, b,
-                                    ctx._numeric, ctx.control, ctx.info)
-        else:
-            mreal, mimag = data.real.copy(), data.imag.copy()
-            sreal, simag = np.zeros_like(b, dtype=np.float64), np.zeros_like(b, dtype=np.float64)
-            rreal, rimag = b.real.copy(), b.imag.copy()
-            status = ctx.funs.solve(sys, indptr, indx,
-                                    mreal, mimag, sreal, simag, rreal, rimag,
-                                    ctx._numeric, ctx.control, ctx.info)
-            sol.real, sol.imag = sreal, simag
-
-        return sol
-
-    def matvec(self, mat, vec, transpose):
-        if transpose:
-            mat = mat[self.mask_T]
-            A = csc_matrix((mat, self.index_T, self.indptr_T),
-                           shape=(vec.shape[0], vec.shape[0]))
-        else:
-            mat = mat[self.mask]
-            A = csc_matrix((mat, self.index, self.indptr),
-                           shape=(vec.shape[0], vec.shape[0]))
-        return A.dot(vec)
+    res = _SOLVER_STATE.add_mat(mat, mat_T, coo_indices, perm)
+    return coo_indices, res
 
 
-def flatten_solver_state(obj):
-    children = (obj.N, obj.coo_indices, obj.dtype)
-    aux_data = None
-    return children, aux_data
+# class SolverState:
+#     def __init__(self, N: int, indices: np.ndarray, mat_dtype):
+#         fam_idx = (mat_dtype, indices.dtype.type)
+#         if not fam_idx in FAMILIES:
+#             raise TypeError(f'Invalid dtypes of arguments: got {fam_idx=}, '
+#                             f'expected one of {FAMILIES.keys()}')
 
-def unflatten_solver_state(aux_data, children):
-    obj = SolverState(*children)
-    return obj
+#         fam = FAMILIES[fam_idx]
+#         self.context = umfpack.UmfpackContext(fam)
+#         self.transpose_context = umfpack.UmfpackContext(fam)
 
-tree_util.register_pytree_node(SolverState, flatten_solver_state, unflatten_solver_state)
+#         self.coo_indices = indices
+#         self.dtype = mat_dtype
+#         self.N = N
+
+#         data = np.linspace(1.0, 42.0, indices.shape[0], dtype=mat_dtype)
+#         self.mat = coo_matrix((data, (indices[:, 0], indices[:, 1])), (N, N),
+#                               dtype=mat_dtype, copy=True).tocsc()
+#         self.mat_T = coo_matrix((data, (indices[:, 1], indices[:, 0])), (N, N),
+#                                 dtype=mat_dtype, copy=True).tocsc()
+
+#         self.index = self.mat.indices
+#         self.index_T = self.mat_T.indices
+
+#         self.indptr = self.mat.indptr
+#         self.indptr_T = self.mat_T.indptr
+
+#         m1 = self.mat.tocoo()
+#         m1_T = self.mat_T.tocoo()
+
+#         coo_indices = np.vstack((m1.row, m1.col), dtype=np.int32).T
+#         coo_indices_T = np.vstack((m1_T.row, m1_T.col), dtype=np.int32).T
+
+#         helper = np.arange(0, indices.shape[0])
+#         ind = np.where(np.equal(indices[:, None], coo_indices[None, :]))[1]
+#         inv_mask = ind[np.where(np.diff(ind)==0)]
+#         self.mask = np.copy(inv_mask)
+#         self.mask[inv_mask] = helper
+
+#         indices_T = indices[:, ::-1]
+#         ind = np.where(np.equal(indices_T[:, None], coo_indices_T[None, :]))[1]
+#         inv_mask_T = ind[np.where(np.diff(ind)==0)]
+#         self.mask_T = np.copy(inv_mask_T)
+#         self.mask_T[inv_mask_T] = helper
+
+#         self.context.symbolic(self.mat)
+#         self.transpose_context.symbolic(self.mat_T)
+
+#     def solve(self, data, b, transpose):
+#         if transpose:
+#             ctx = self.transpose_context
+#             indx = self.index_T
+#             indptr = self.indptr_T
+#             data = data[self.mask_T]
+#         else:
+#             ctx = self.context
+#             indx = self.index
+#             indptr = self.indptr
+#             data = data[self.mask]
+
+#         # numeric ---------------
+#         ctx.free_numeric()
+
+#         assert ctx._symbolic is not None
+
+#         if ctx.isReal:
+#             mtx = data.copy()
+#             status, ctx._numeric\
+#                     = ctx.funs.numeric(indptr, indx, mtx,
+#                                        ctx._symbolic,
+#                                        ctx.control, ctx.info)
+#         else:
+#             real, imag = data.real.copy(), data.imag.copy()
+#             status, ctx._numeric\
+#                     = ctx.funs.numeric(indptr, indx,
+#                                        real, imag,
+#                                        ctx._symbolic,
+#                                        ctx.control, ctx.info)
+
+#         # -----------------------------------------
+#         sys = umfpack.UMFPACK_A
+#         sol = np.zeros_like(b)
+#         if ctx.isReal:
+#             status = ctx.funs.solve(sys, indptr, indx, data, sol, b,
+#                                     ctx._numeric, ctx.control, ctx.info)
+#         else:
+#             mreal, mimag = data.real.copy(), data.imag.copy()
+#             sreal, simag = np.zeros_like(b, dtype=np.float64), np.zeros_like(b, dtype=np.float64)
+#             rreal, rimag = b.real.copy(), b.imag.copy()
+#             status = ctx.funs.solve(sys, indptr, indx,
+#                                     mreal, mimag, sreal, simag, rreal, rimag,
+#                                     ctx._numeric, ctx.control, ctx.info)
+#             sol.real, sol.imag = sreal, simag
+
+#         return sol
+
+#     def matvec(self, mat, vec, transpose):
+#         if transpose:
+#             mat = mat[self.mask_T]
+#             A = csc_matrix((mat, self.index_T, self.indptr_T),
+#                            shape=(vec.shape[0], vec.shape[0]))
+#         else:
+#             mat = mat[self.mask]
+#             A = csc_matrix((mat, self.index, self.indptr),
+#                            shape=(vec.shape[0], vec.shape[0]))
+#         return A.dot(vec)
 
 #---------------------
 
 # Abstract eval for both matvec and spsolve
-def _abstract_eval(data, b, *, s_state, transpose=False, n_cpu=None, _mode=0):
+def _abstract_eval(data, b, *, solver_num, transpose=False, n_cpu=None, _mode=0):
     if data.dtype != b.dtype:
         raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
     if not isinstance(n_cpu, int):
@@ -154,9 +222,9 @@ def _abstract_eval(data, b, *, s_state, transpose=False, n_cpu=None, _mode=0):
         raise TypeError('invalid type of `_mode` argument, expected `int`, got '
                          f'{type(_mode)}')
     transpose = bool(transpose)
-    if not isinstance(s_state, SolverState):
-        raise TypeError('invalid type of `s_state` argument, expected '
-                        f'`jax_plate.Sparse.SolverState`, got {type(s_state)}')
+    if not isinstance(solver_num, int):
+        raise TypeError('invalid type of `solver_num` argument, expected '
+                        f'`int`, got {type(solver_num)}')
     if _mode in (0, 2, 3, 4):
         return b
     elif _mode == 1:
@@ -167,76 +235,39 @@ def _abstract_eval(data, b, *, s_state, transpose=False, n_cpu=None, _mode=0):
 # ----------------
 
 # custom matvec primitive ----------------------------------------------------
-def matvec(mat, vec, *, s_state, transpose=False, n_cpu=None, _mode=0):
-    return _matvec_p.bind(mat, vec, s_state=s_state, transpose=transpose,
+def matvec(mat, vec, *, solver_num, transpose=False, n_cpu=None, _mode=0):
+    return _matvec_p.bind(mat, vec, solver_num=solver_num, transpose=transpose,
                           n_cpu=n_cpu, _mode=_mode)
 
-def _matvec_parallel_func(data, b, s_state, transpose):
-    return s_state.matvec(data, b, transpose)
 
-def _matvec_cpu_lowering(ctx, data, b, *, s_state, transpose, n_cpu, _mode):
+def _matvec_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
     args = [data, b]
 
     def _callback(data, b, **kwargs):
-        if _mode == 0:
-            return (s_state.matvec(data, b, transpose),)
+        res = _SOLVER_STATE.matvec()
+        # if _mode == 0:
+        #     return (s_state.matvec(data, b, transpose),)
 
-        if n_cpu != 1: # Multiprocessing is not functional
-            if n_cpu == 0:
-                _n_cpu = cpu_count()
-            else:
-                _n_cpu = n_cpu
-            pool = Pool(_n_cpu)
-
-            _pfunc0 = functools.partial(_matvec_parallel_func, s_state=s_state,
-                                        transpose=transpose)
-
-            if _mode == 1:
-                _pfunc = functools.partial(_pfunc0, b=b)
-                _res = pool.starmap(_pfunc, data)
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 2:
-                _pfunc = functools.partial(_pfunc0, data=data)
-                _res = pool.starmap(_pfunc, b)
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 3:
-                _pfunc = _pfunc0
-                _res = pool.starmap(_pfunc, zip(data, b))
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 4: # lazy implementation, may be better without loop
-                res = []
-                _pfunc = _pfunc0
-                for i in range(b.shape[0]):
-                    _res = pool.starmap(_pfunc, zip(data, b[i]))
-                    res.append(_res)
-                res = np.array(res, dtype=b.dtype)
-            else:
-                raise NotImplementedError()
-
-            pool.close()
-            pool.join()
-
-        else:
-            if _mode == 1:
-                res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
-                for i in range(data.shape[0]):
-                    res[i, :] = s_state.matvec(data[i, :], b, transpose)
-            elif _mode == 2:
-                res = np.zeros_like(b)
-                for i in range(b.shape[0]):
-                    res[i, :] = s_state.matvec(data, b[i, :], transpose)
-            elif _mode == 3:
-                res = np.zeros_like(b)
-                for i in range(b.shape[0]):
-                    res[i, :] = s_state.matvec(data[i, :], b[i, :], transpose)
-            elif _mode == 4:
-                res = np.zeros_like(b)
-                for i in range(b.shape[1]):
-                    for j in range(b.shape[0]):
-                        res[j, i, :] = s_state.matvec(data[i, :],
-                                                      b[j, i, :], transpose).astype(b.dtype)
-            else:
-                raise NotImplementedError()
+        # if _mode == 1:
+        #     res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
+        #     for i in range(data.shape[0]):
+        #         res[i, :] = s_state.matvec(data[i, :], b, transpose)
+        # elif _mode == 2:
+        #     res = np.zeros_like(b)
+        #     for i in range(b.shape[0]):
+        #         res[i, :] = s_state.matvec(data, b[i, :], transpose)
+        # elif _mode == 3:
+        #     res = np.zeros_like(b)
+        #     for i in range(b.shape[0]):
+        #         res[i, :] = s_state.matvec(data[i, :], b[i, :], transpose)
+        # elif _mode == 4:
+        #     res = np.zeros_like(b)
+        #     for i in range(b.shape[1]):
+        #         for j in range(b.shape[0]):
+        #             res[j, i, :] = s_state.matvec(data[i, :],
+        #                                           b[j, i, :], transpose).astype(b.dtype)
+        # else:
+        #     raise NotImplementedError()
 
         return (res,)
 
@@ -256,7 +287,9 @@ def _matvec_transpose(ct, data, v, **kwargs):
         kwargs['transpose'] = not kwargs['transpose']
         return data, matvec(data, ct, **kwargs)
     else:
-        row, col = kwargs['s_state'].coo_indices[:, 0], kwargs['s_state'].coo_indices[:, 1]
+        num = kwargs['solver_num']
+        patt = _SOLVER_STATE.patterns[num]
+        row, col = patt[:, 0], patt[:, 1]
         return ct[..., row] * v[..., col], v
 
 
@@ -270,73 +303,34 @@ mlir.register_lowering(_matvec_p, _matvec_cpu_lowering, platform='cpu')
 #--------------------------------------------------------------------
 
 # custom spsolve --------------------------------------------------------------
-def _parallel_loop_func(data, b, s_state, transpose):
-    return s_state.solve(data, b, transpose)
-
-
-def _spsolve_cpu_lowering(ctx, data, b, *, s_state, transpose, n_cpu, _mode):
+def _spsolve_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
     args = [data, b]
 
     def _callback(data, b, **kwargs):
-        if _mode == 0:
-            return (s_state.solve(data, b, transpose),)
+        res = _SOLVER_STATE.solve()
+        # if _mode == 0:
+        #     return (s_state.solve(data, b, transpose),)
 
-        if n_cpu != 1:
-            if n_cpu == 0:
-                _n_cpu = cpu_count()
-            else:
-                _n_cpu = n_cpu
-            pool = Pool(_n_cpu)
-
-            _pfunc0 = functools.partial(_parallel_loop_func, s_state=s_state,
-                                        transpose=transpose)
-
-            if _mode == 1:
-                _pfunc = functools.partial(_pfunc0, b=b)
-                _res = pool.starmap(_pfunc, data)
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 2:
-                _pfunc = functools.partial(_pfunc0, data=data)
-                _res = pool.starmap(_pfunc, b)
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 3:
-                _pfunc = _pfunc0
-                _res = pool.starmap(_pfunc, zip(data, b))
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 4: # lazy implementation, may be better without loop
-                res = []
-                _pfunc = _pfunc0
-                for i in range(b.shape[0]):
-                    _res = pool.starmap(_pfunc, zip(data, b[i]))
-                    res.append(_res)
-                res = np.array(res, dtype=b.dtype)
-            else:
-                raise NotImplementedError()
-
-            pool.close()
-            pool.join()
-
-        else:
-            if _mode == 1:
-                res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
-                for i in range(data.shape[0]):
-                    res[i, :] = s_state.solve(data[i, :], b, transpose)
-            elif _mode == 2:
-                res = np.zeros_like(b)
-                for i in range(b.shape[0]):
-                    res[i, :] = s_state.solve(data, b[i, :], transpose)
-            elif _mode == 3:
-                res = np.zeros_like(b)
-                for i in range(b.shape[0]):
-                    res[i, :] = s_state.solve(data[i, :], b[i, :], transpose)
-            elif _mode == 4:
-                res = np.zeros_like(b)
-                for i in range(b.shape[1]):
-                    for j in range(b.shape[0]):
-                        res[j, i, :] = s_state.solve(data[i, :],
-                                                     b[j, i, :], transpose).astype(b.dtype)
-            else:
-                raise NotImplementedError()
+        # if _mode == 1:
+        #     res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
+        #     for i in range(data.shape[0]):
+        #         res[i, :] = s_state.solve(data[i, :], b, transpose)
+        # elif _mode == 2:
+        #     res = np.zeros_like(b)
+        #     for i in range(b.shape[0]):
+        #         res[i, :] = s_state.solve(data, b[i, :], transpose)
+        # elif _mode == 3:
+        #     res = np.zeros_like(b)
+        #     for i in range(b.shape[0]):
+        #         res[i, :] = s_state.solve(data[i, :], b[i, :], transpose)
+        # elif _mode == 4:
+        #     res = np.zeros_like(b)
+        #     for i in range(b.shape[1]):
+        #         for j in range(b.shape[0]):
+        #             res[j, i, :] = s_state.solve(data[i, :],
+        #                                          b[j, i, :], transpose).astype(b.dtype)
+        # else:
+        #     raise NotImplementedError()
 
         return (res,)
 
@@ -379,9 +373,9 @@ ad.primitive_transposes[_spsolve_p] = _spsolve_transpose
 mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
 
-def spsolve(data, b, *, s_state, transpose=False, n_cpu=None, _mode=0):
+def spsolve(data, b, *, solver_num: int, transpose=False, n_cpu=None, _mode=0):
     """A sparse direct solver, based on scipy.sparse.linalg.spsolve."""
-    return _spsolve_p.bind(data, b, s_state=s_state,
+    return _spsolve_p.bind(data, b, solver_num=solver_num,
                            transpose=transpose, n_cpu=n_cpu, _mode=_mode)
 
 
