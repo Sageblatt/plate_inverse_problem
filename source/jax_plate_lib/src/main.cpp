@@ -1,8 +1,5 @@
-#include <pybind11/pybind11.h>
-
 #include "test_function.h"
 #include "InnerState.h"
-
 
 PYBIND11_MODULE(jax_plate_lib, m) {
     m.def("test_function", &test_function, "Testing purposes.");

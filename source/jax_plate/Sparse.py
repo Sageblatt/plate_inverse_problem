@@ -7,7 +7,7 @@ from jax import core
 from jax.interpreters import ad, batching, mlir, xla
 import jax.numpy as jnp
 import numpy as np
-from scipy.sparse import coo_matrix, csc_matrix
+from scipy.sparse import coo_matrix
 
 from jax_plate.jax_plate_lib import InnerState
 

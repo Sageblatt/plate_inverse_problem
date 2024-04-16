@@ -19,7 +19,7 @@ from jax_plate.pyFFInterface import getOutput, processFFOutput
 from jax_plate.Utils import get_source_dir
 from jax_plate.Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 from jax_plate.Optimizers import optResult
-from jax_plate.Sparse import spsolve, SolverState, create_symbolic
+from jax_plate.Sparse import spsolve, create_symbolic
 
 
 class StaticNdArrayWrapper(np.ndarray):

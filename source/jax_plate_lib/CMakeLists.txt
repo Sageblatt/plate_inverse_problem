@@ -24,5 +24,3 @@ target_link_libraries(${PROJECT_NAME} PUBLIC OpenMP::OpenMP_CXX)
 target_link_libraries(${PROJECT_NAME} PUBLIC ${UMFPACK})
 
 message(STATUS "Found UMFPACK library here: ${UMFPACK}")
-
-#target_include_directories(pyetfe PUBLIC "include" "kissfft")
