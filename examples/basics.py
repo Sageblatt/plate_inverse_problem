@@ -29,5 +29,5 @@ r2 = p.solveForward(freq, res)
 
 print(f'FR: {np.sum(np.abs(fr)):.4f}, expected: 341.9363')
 print(f'Initial: {np.sum(np.abs(r1)):.4f}, expected: expected: 91.7139')
-print(f'After: {np.sum(np.abs(r2)):.4f}, expected: 90.8778')
-print(f'F_hist: {np.sum(np.abs(hist)):.4f}, expected: 0.4389')
+print(f'After: {np.sum(np.abs(r2)):.4f}, expected: 91.7141')
+print(f'F_hist: {np.sum(np.abs(hist)):.4f}, expected: 0.4421')

@@ -1,118 +1,178 @@
 """Modified CPU version of jax.experimental.sparse.linalg.spsolve with batching"""
 import functools
-from multiprocessing import Pool, cpu_count
+from multiprocessing import cpu_count
 
 import jax
 from jax import core
-from jax.experimental import sparse
 from jax.interpreters import ad, batching, mlir, xla
 import jax.numpy as jnp
 import numpy as np
-from scipy.sparse import csr_matrix, linalg
+from scipy.sparse import coo_matrix, csc_matrix
+
+from jax_plate.jax_plate_lib import InnerState
 
 
 # Ensure that jax uses CPU
 jax.config.update('jax_platform_name', 'cpu')
 jax.config.update("jax_enable_x64", True)
 
+class SolverState:
+    def __init__(self):
+        self.state = InnerState()
+        self.patterns = []
+        self.permutations = []
 
-def _spsolve_abstract_eval(data, indices, b, *, n_cpu, _mode):
+    @property
+    def state_size(self):
+        return len(self.patterns)
+
+    def add_mat(self, mat, mat_T, indices, permutation) -> int:
+        self.patterns.append(indices.copy())
+        self.permutations.append(permutation.copy())
+
+        self.state.add_mat(mat.shape[0], mat.indices, mat.indptr,
+                           mat_T.indices, mat.indptr, permutation, mat.data)
+
+        return self.state_size - 1
+
+    def solve(self, data, b, solver_num, transpose, n_cpu, _mode):
+        return self.state.solve(data, b, solver_num, transpose, n_cpu, _mode)
+
+    def matvec(self, mat, vec, solver_num, transpose, n_cpu, _mode):
+        return self.state.matvec(mat, vec, solver_num, transpose, n_cpu, _mode)
+
+_SOLVER_STATE = SolverState()
+
+def find_permutation(arr1: np.ndarray, arr2: np.ndarray) -> np.ndarray:
+    """
+    Finds numpy mask array such that `arr1[find_permutation(arr1, arr2)]`
+    equals `arr2`. May give wrong results if permutation is not unique.
+
+    Parameters
+    ----------
+    arr1 : np.ndarray
+        Array with shape (N, 2).
+    arr2 : np.ndarray
+        Array with shape (N, 2).
+
+    Returns
+    -------
+    mask : np.ndarray
+        Masking array.
+
+    """
+    assert arr1.shape == arr2.shape
+    assert arr1.shape[1] == 2
+
+    ind = np.where(np.equal(arr2[:, None], arr1[None, :]))[1]
+    mask = ind[np.where(np.diff(ind)==0)]
+    return np.array(mask, dtype=arr1.dtype)
+
+FAMILIES = {(np.float64, np.int32): 'di',
+            (np.float64, np.int64): 'dl',
+            (np.complex128, np.int32): 'zi',
+            (np.complex128, np.int64): 'zl'}
+
+def create_symbolic(N: int,
+                    indices: np.ndarray[np.int32 | np.int64],
+                    mat_dtype: np.dtype) -> (np.ndarray, int):
+    fam_idx = (mat_dtype, indices.dtype.type)
+    if not fam_idx in FAMILIES:
+        raise TypeError(f'Invalid dtypes of arguments: got {fam_idx=}, '
+                        f'expected one of {FAMILIES.keys()}')
+
+    data = np.linspace(1.0, 42.0, indices.shape[0], dtype=mat_dtype)
+    mat = coo_matrix((data, (indices[:, 0], indices[:, 1])), (N, N),
+                     dtype=mat_dtype, copy=True).tocsc()
+    mat_T = coo_matrix((data, (indices[:, 1], indices[:, 0])), (N, N),
+                       dtype=mat_dtype, copy=True).tocsc()
+
+    m1 = mat.tocoo()
+    m1_T = mat_T.tocoo()
+
+    coo_indices = np.vstack((m1.row, m1.col), dtype=indices.dtype).T
+    coo_indices_T = np.vstack((m1_T.row, m1_T.col), dtype=indices.dtype).T
+
+    indices_T = coo_indices[:, ::-1]
+    perm = find_permutation(indices_T, coo_indices_T)
+
+    res = _SOLVER_STATE.add_mat(mat, mat_T, coo_indices, perm)
+    return (m1.row, m1.col), res
+#---------------------
+
+# Abstract eval for both matvec and spsolve
+def _abstract_eval(data, b, *, solver_num, transpose=False, n_cpu=None, _mode=0):
     if data.dtype != b.dtype:
         raise ValueError(f"data types do not match: {data.dtype=} {b.dtype=}")
-    if not (jnp.issubdtype(indices.dtype, jnp.integer)):
-        raise ValueError(f"index arrays must be integer typed; got {indices.dtype=}")
     if not isinstance(n_cpu, int):
-        raise ValueError(f'invalid type of `n_cpu` argument, expected `int`, '
+        raise TypeError(f'invalid type of `n_cpu` argument, expected `int`, '
                          f'got {type(n_cpu)}')
     if n_cpu < 0:
         raise ValueError('n_cpu argument should be non-negative')
     if not isinstance(_mode, int):
-        raise ValueError('invalid type of `_mode` argument, expected `int`, got '
+        raise TypeError('invalid type of `_mode` argument, expected `int`, got '
                          f'{type(_mode)}')
+    transpose = bool(transpose)
+    if not isinstance(solver_num, int):
+        raise TypeError('invalid type of `solver_num` argument, expected '
+                        f'`int`, got {type(solver_num)}')
     if _mode in (0, 2, 3, 4):
         return b
     elif _mode == 1:
         return core.ShapedArray((data.shape[0], b.shape[0]), b.dtype)
     else:  # should't reach here as handling is done in _spsolve_batch
         raise NotImplementedError()
+# ----------------
 
+# custom matvec primitive ----------------------------------------------------
+def matvec(mat, vec, *, solver_num, transpose=False, n_cpu=None, _mode=0):
+    if n_cpu == 0:
+        n_cpu = cpu_count()
+    return _matvec_p.bind(mat, vec, solver_num=solver_num, transpose=transpose,
+                          n_cpu=n_cpu, _mode=_mode)
 
-def _parallel_loop_func(data, b, indx):
-    A = csr_matrix((data, indx.T), shape=(b.shape[0], b.shape[0]),
-                                             dtype=b.dtype)
-    return linalg.spsolve(A, b).astype(b.dtype)
+def _matvec_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
+    args = [data, b]
 
+    def _callback(data, b, **kwargs):
+        res = _SOLVER_STATE.matvec(data, b, solver_num, transpose, n_cpu, _mode)
+        return (res,)
 
-def _spsolve_cpu_lowering(ctx, data, indices, b, n_cpu, _mode):
-    args = [data, indices, b]
+    result, _, _ = mlir.emit_python_callback(
+        ctx, _callback, None, args, ctx.avals_in, ctx.avals_out,
+        has_side_effect=False)
+    return result
 
-    def _callback(data, indices, b, **kwargs):
-        if _mode == 0:
-            A = csr_matrix((data, indices.T),
-                           shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-            return (linalg.spsolve(A, b).astype(b.dtype),)
+def _matvec_jvp_mat(data_dot, data, v, **kwargs):
+    return matvec(data_dot, v, **kwargs)
 
-        if n_cpu != 1:
-            if n_cpu == 0:
-                _n_cpu = cpu_count()
-            else:
-                _n_cpu = n_cpu
-            pool = Pool(_n_cpu)
+def _matvec_jvp_vec(v_dot, data, v, **kwargs):
+    return matvec(data, v_dot, **kwargs)
 
-            if _mode == 1:
-                _pfunc = functools.partial(_parallel_loop_func, indx=indices, b=b)
-                _res = pool.starmap(_pfunc, data)
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 2:
-                _pfunc = functools.partial(_parallel_loop_func, data=data, indx=indices)
-                _res = pool.starmap(_pfunc, b)
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 3:
-                _pfunc = functools.partial(_parallel_loop_func, indx=indices)
-                _res = pool.starmap(_pfunc, zip(data, b))
-                res = np.array(_res, dtype=b.dtype)
-            elif _mode == 4: # lazy implementation, may be better without loop
-                res = []
-                _pfunc = functools.partial(_parallel_loop_func, indx=indices)
-                for i in range(b.shape[0]):
-                    _res = pool.starmap(_pfunc, zip(data, b[i]))
-                    res.append(_res)
-                res = np.array(res, dtype=b.dtype)
-            else:
-                raise NotImplementedError()
+def _matvec_transpose(ct, data, v, **kwargs):
+    if ad.is_undefined_primal(v):
+        kwargs['transpose'] = not kwargs['transpose']
+        return data, matvec(data, ct, **kwargs)
+    else:
+        num = kwargs['solver_num']
+        patt = _SOLVER_STATE.patterns[num]
+        row, col = patt[:, 0], patt[:, 1]
+        return ct[..., row] * v[..., col], v
 
-            pool.close()
-            pool.join()
+_matvec_p = core.Primitive('custom_matvec')
+_matvec_p.def_impl(functools.partial(xla.apply_primitive, _matvec_p))
+_matvec_p.def_abstract_eval(_abstract_eval)
+ad.defjvp(_matvec_p, _matvec_jvp_mat, _matvec_jvp_vec)
+ad.primitive_transposes[_matvec_p] = _matvec_transpose
+mlir.register_lowering(_matvec_p, _matvec_cpu_lowering, platform='cpu')
+#--------------------------------------------------------------------
 
-        else:
-            if _mode == 1:
-                res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
-                for i in range(data.shape[0]):
-                    A = csr_matrix((data[i, :], indices.T),
-                                   shape=(b.shape[0], b.shape[0]), dtype=b.dtype)
-                    res[i, :] = linalg.spsolve(A, b).astype(b.dtype)
-            elif _mode == 2:
-                res = np.zeros_like(b)
-                A = csr_matrix((data, indices.T),
-                               shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-                for i in range(b.shape[0]):
-                    res[i, :] = linalg.spsolve(A, b[i, :]).astype(b.dtype)
-            elif _mode == 3:
-                res = np.zeros_like(b)
-                for i in range(b.shape[0]):
-                    A = csr_matrix((data[i, :], indices.T),
-                                   shape=(b.shape[1], b.shape[1]), dtype=b.dtype)
-                    res[i, :] = linalg.spsolve(A, b[i, :]).astype(b.dtype)
-            elif _mode == 4:
-                res = np.zeros_like(b)
-                for i in range(b.shape[1]):
-                    A = csr_matrix((data[i, :], indices.T),
-                                   shape=(b.shape[2], b.shape[2]), dtype=b.dtype)
-                    for j in range(b.shape[0]):
-                        res[j, i, :] = linalg.spsolve(A, b[j, i, :]).astype(b.dtype)
-            else:
-                raise NotImplementedError()
+# custom spsolve --------------------------------------------------------------
+def _spsolve_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
+    args = [data, b]
 
+    def _callback(data, b, **kwargs):
+        res = _SOLVER_STATE.solve(data, b, solver_num, transpose, n_cpu, _mode)
         return (res,)
 
     result, _, _ = mlir.emit_python_callback(
@@ -121,90 +181,43 @@ def _spsolve_cpu_lowering(ctx, data, indices, b, n_cpu, _mode):
     return result
 
 
-def _spsolve_jvp_lhs(data_dot, data, indices, b, **kwds):
+def _spsolve_jvp_lhs(data_dot, data, b, **kwds):
     # d/dM M^-1 b = M^-1 M_dot M^-1 b
-    p = spsolve(data, indices, b, **kwds)
-    md = kwds['_mode']
-    if md == 0:
-        A = sparse.BCOO((data_dot, indices), shape=(b.shape[0], b.shape[0]))
-        q = A @ p
-    elif md == 1:
-        A = sparse.empty((data.shape[0], b.shape[0], b.shape[0]),
-                         dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
-                         n_batch=1, n_dense=0, nse=data.shape[1])
-        A.data = data_dot
-        A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
-        q = sparse.bcoo_dot_general(A, p,
-                                    dimension_numbers=(((1), (0)), ((0), ())))
-    elif md == 2:
-        A = sparse.empty((b.shape[1], b.shape[1]),
-                         dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
-                         n_batch=0, n_dense=0, nse=data.shape[1])
-        A.data = data_dot
-        A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
-        q = sparse.bcoo_dot_general(A, p,
-                                    dimension_numbers=(((0), (1)), ((), (0))))
-    elif md == 3:
-        A = sparse.empty((data.shape[0], b.shape[1], b.shape[1]),
-                         dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
-                         n_batch=1, n_dense=0, nse=data.shape[1])
-        A.data = data_dot
-        A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
-        q = sparse.bcoo_dot_general(A, p,
-                                    dimension_numbers=(((1), (1)), ((0), (0))))
-    elif md == 4:
-        A = sparse.empty((data.shape[0], b.shape[2], b.shape[2]),
-                         dtype=b.dtype, index_dtype='int32', sparse_format='bcoo',
-                         n_batch=1, n_dense=0, nse=data.shape[1])
-        A.data = data_dot
-        A.indices = jnp.tile(indices, (data.shape[0], 1, 1))
-        q = jnp.zeros_like(p)
-
-        def _loop_func(i, res):
-            return res.at[i, :, :].set(
-                sparse.bcoo_dot_general(A, p[i, :, :],
-                                        dimension_numbers=(((1), (1)), ((0), (0)))))
-
-        q = jax.lax.fori_loop(0, b.shape[0], _loop_func, q)
-
-    else:  # shouldn't reach here as handling is done in _spsolve_batch
-        return NotImplementedError()
-
-    return -spsolve(data, indices, q, **kwds)
+    p = spsolve(data, b, **kwds)
+    q = matvec(data_dot, p, **kwds)
+    return -spsolve(data, q, **kwds)
 
 
-def _spsolve_jvp_rhs(b_dot, data, indices, b, **kwds):
+def _spsolve_jvp_rhs(b_dot, data, b, **kwds):
     # d/db M^-1 b = M^-1 b_dot
-    return spsolve(data, indices, b_dot, **kwds)
+    return spsolve(data, b_dot, **kwds)
 
-
-def _spsolve_transpose(ct, data, indices, b, **kwds):
-    assert not ad.is_undefined_primal(indices)
+def _spsolve_transpose(ct, data, b, **kwds):
     if ad.is_undefined_primal(b):
-        indices_T = jnp.flip(indices, axis=1)
         if isinstance(ct, ad.Zero):
             rhs = jnp.zeros(b.aval.shape, b.aval.dtype)
         else:
             rhs = ct
-        ct_out = spsolve(data, indices_T, rhs, **kwds)
-        return data, indices, ct_out
+        kwds['transpose'] = not kwds['transpose']
+        ct_out = spsolve(data, rhs, **kwds)
+        return data, ct_out
     else:
         # Should never reach here, because JVP is linear wrt data.
         raise NotImplementedError("spsolve transpose with respect to data")
 
-
 _spsolve_p = core.Primitive('cpu_spsolve')
 _spsolve_p.def_impl(functools.partial(xla.apply_primitive, _spsolve_p))
-_spsolve_p.def_abstract_eval(_spsolve_abstract_eval)
-ad.defjvp(_spsolve_p, _spsolve_jvp_lhs, None, _spsolve_jvp_rhs)
+_spsolve_p.def_abstract_eval(_abstract_eval)
+ad.defjvp(_spsolve_p, _spsolve_jvp_lhs, _spsolve_jvp_rhs)
 ad.primitive_transposes[_spsolve_p] = _spsolve_transpose
 mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
-
-def spsolve(data, indices, b, n_cpu=None, _mode=0):
+def spsolve(data, b, *, solver_num: int, transpose=False, n_cpu=None, _mode=0):
     """A sparse direct solver, based on scipy.sparse.linalg.spsolve."""
-    return _spsolve_p.bind(data, indices, b, n_cpu=n_cpu, _mode=_mode)
-
+    if n_cpu == 0:
+        n_cpu = cpu_count()
+    return _spsolve_p.bind(data, b, solver_num=solver_num,
+                           transpose=transpose, n_cpu=n_cpu, _mode=_mode)
 
 # Batching _mode`s:
 # 0 - no vectorization
@@ -213,15 +226,13 @@ def spsolve(data, indices, b, n_cpu=None, _mode=0):
 # 3 - data and b are vectorized
 # 4 - data and b are vectorized, b has 2 batch dims # needed for jax.hessian
 # TODO: if dims are higher, extend existing axes with values, compute evrth, then return to original shape
-def _spsolve_batch(vals, axes, **kwargs):
-    data, indices, b = vals
-    ad, ai, ab = axes
+def _batch_template(func, vals, axes, **kwargs):
+    data, b = vals
+    ad, ab = axes
     res = jnp.zeros_like(b)
 
     assert b.ndim < 4, 'Only two batch dimensions are supported'
     assert data.ndim < 3, 'Only one batch dimension is supported'
-    assert indices.ndim == 2, '`indices` batching is not supported'
-    assert ai is None, '`indices` batching is not supported'
 
     if ad is not None and ab is None:
         data = jnp.moveaxis(data, ad, 0)
@@ -244,10 +255,12 @@ def _spsolve_batch(vals, axes, **kwargs):
 
     else:
         raise NotImplementedError('Batching of spsolve with arguments shapes: '
-                                  f'{data.shape=}, {indices.shape=}, {b.shape=}')
+                                  f'{data.shape=}, {b.shape=}')
 
-    res = spsolve(data, indices, b, **kwargs)
+    res = func(data, b, **kwargs)
     return res, 0
 
-
+_spsolve_batch = functools.partial(_batch_template, spsolve)
 batching.primitive_batchers[_spsolve_p] = _spsolve_batch
+_matvec_batch = functools.partial(_batch_template, matvec)
+batching.primitive_batchers[_matvec_p] = _matvec_batch

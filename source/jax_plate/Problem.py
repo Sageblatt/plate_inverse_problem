@@ -19,7 +19,7 @@ from jax_plate.pyFFInterface import getOutput, processFFOutput
 from jax_plate.Utils import get_source_dir
 from jax_plate.Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 from jax_plate.Optimizers import optResult
-from jax_plate.Sparse import spsolve
+from jax_plate.Sparse import spsolve, SolverState, create_symbolic
 
 
 class StaticNdArrayWrapper(np.ndarray):
@@ -236,6 +236,9 @@ class Problem:
         _Ks = np.array(processed_ff_output['Ks'], dtype=np.float64)
 
         nz_mask = (np.sum(np.abs(_Ks), axis=0) + np.sum(np.abs(_mats), axis=0)).nonzero()
+        nz_mask, self.solver_num = create_symbolic(_Ks.shape[1],
+                                                   np.array(nz_mask, dtype=np.int32).T,
+                                                   np.complex128)
 
         self.M = _mats[0][nz_mask]
         self.L = _mats[1][nz_mask]
@@ -287,9 +290,6 @@ class Problem:
         self.test_point = processed_ff_output["test_point_coord"]
         self.constrained_idx = processed_ff_output["constrained_idx"]
 
-        rs, cs = nz_mask
-        self.indices = np.vstack((rs, cs), dtype=np.int32).T.view(StaticNdArrayWrapper)
-
 
     @functools.cache
     def getFRFunction(self) -> Callable:
@@ -306,7 +306,7 @@ class Problem:
         """
         def _solve(f, params, Ks, fKs, MInertia, fInertia, fLoad,
                    interpolation_vector, interpolation_value_from_bc,
-                   transform, indx, cpu):
+                   transform, solv_num, cpu):
             # solve for one frequency f (in [Hz])
             omega = 2.0 * np.pi * f
 
@@ -324,7 +324,7 @@ class Problem:
             A = -(omega ** 2) * MInertia + K
             b = -(omega ** 2) * fInertia + fK + fLoad
 
-            u = spsolve(A, indx, b, n_cpu=cpu)
+            u = spsolve(A, b, solver_num=solv_num, n_cpu=cpu)
 
             # interpolation_vector == c
             # interpolation_value_from_bc == c_0 from 4.1.18
@@ -342,7 +342,7 @@ class Problem:
                                          interpolation_vector=self.interpolation_vector,
                                          interpolation_value_from_bc=self.interpolation_value_from_bc,
                                          transform=self.material.get_transform(self.geometry.height),
-                                         indx=self.indices,
+                                         solv_num=self.solver_num,
                                          cpu=self.n_cpu)
 
         _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
