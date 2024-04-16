@@ -41,7 +41,6 @@ class SolverState:
     def matvec(self, mat, vec, solver_num, transpose, n_cpu, _mode):
         return self.state.matvec(mat, vec, solver_num, transpose, n_cpu, _mode)
 
-
 _SOLVER_STATE = SolverState()
 
 def find_permutation(arr1: np.ndarray, arr2: np.ndarray) -> np.ndarray:
@@ -99,115 +98,6 @@ def create_symbolic(N: int,
 
     res = _SOLVER_STATE.add_mat(mat, mat_T, coo_indices, perm)
     return (m1.row, m1.col), res
-
-
-# class SolverState:
-#     def __init__(self, N: int, indices: np.ndarray, mat_dtype):
-#         fam_idx = (mat_dtype, indices.dtype.type)
-#         if not fam_idx in FAMILIES:
-#             raise TypeError(f'Invalid dtypes of arguments: got {fam_idx=}, '
-#                             f'expected one of {FAMILIES.keys()}')
-
-#         fam = FAMILIES[fam_idx]
-#         self.context = umfpack.UmfpackContext(fam)
-#         self.transpose_context = umfpack.UmfpackContext(fam)
-
-#         self.coo_indices = indices
-#         self.dtype = mat_dtype
-#         self.N = N
-
-#         data = np.linspace(1.0, 42.0, indices.shape[0], dtype=mat_dtype)
-#         self.mat = coo_matrix((data, (indices[:, 0], indices[:, 1])), (N, N),
-#                               dtype=mat_dtype, copy=True).tocsc()
-#         self.mat_T = coo_matrix((data, (indices[:, 1], indices[:, 0])), (N, N),
-#                                 dtype=mat_dtype, copy=True).tocsc()
-
-#         self.index = self.mat.indices
-#         self.index_T = self.mat_T.indices
-
-#         self.indptr = self.mat.indptr
-#         self.indptr_T = self.mat_T.indptr
-
-#         m1 = self.mat.tocoo()
-#         m1_T = self.mat_T.tocoo()
-
-#         coo_indices = np.vstack((m1.row, m1.col), dtype=np.int32).T
-#         coo_indices_T = np.vstack((m1_T.row, m1_T.col), dtype=np.int32).T
-
-#         helper = np.arange(0, indices.shape[0])
-#         ind = np.where(np.equal(indices[:, None], coo_indices[None, :]))[1]
-#         inv_mask = ind[np.where(np.diff(ind)==0)]
-#         self.mask = np.copy(inv_mask)
-#         self.mask[inv_mask] = helper
-
-#         indices_T = indices[:, ::-1]
-#         ind = np.where(np.equal(indices_T[:, None], coo_indices_T[None, :]))[1]
-#         inv_mask_T = ind[np.where(np.diff(ind)==0)]
-#         self.mask_T = np.copy(inv_mask_T)
-#         self.mask_T[inv_mask_T] = helper
-
-#         self.context.symbolic(self.mat)
-#         self.transpose_context.symbolic(self.mat_T)
-
-#     def solve(self, data, b, transpose):
-#         if transpose:
-#             ctx = self.transpose_context
-#             indx = self.index_T
-#             indptr = self.indptr_T
-#             data = data[self.mask_T]
-#         else:
-#             ctx = self.context
-#             indx = self.index
-#             indptr = self.indptr
-#             data = data[self.mask]
-
-#         # numeric ---------------
-#         ctx.free_numeric()
-
-#         assert ctx._symbolic is not None
-
-#         if ctx.isReal:
-#             mtx = data.copy()
-#             status, ctx._numeric\
-#                     = ctx.funs.numeric(indptr, indx, mtx,
-#                                        ctx._symbolic,
-#                                        ctx.control, ctx.info)
-#         else:
-#             real, imag = data.real.copy(), data.imag.copy()
-#             status, ctx._numeric\
-#                     = ctx.funs.numeric(indptr, indx,
-#                                        real, imag,
-#                                        ctx._symbolic,
-#                                        ctx.control, ctx.info)
-
-#         # -----------------------------------------
-#         sys = umfpack.UMFPACK_A
-#         sol = np.zeros_like(b)
-#         if ctx.isReal:
-#             status = ctx.funs.solve(sys, indptr, indx, data, sol, b,
-#                                     ctx._numeric, ctx.control, ctx.info)
-#         else:
-#             mreal, mimag = data.real.copy(), data.imag.copy()
-#             sreal, simag = np.zeros_like(b, dtype=np.float64), np.zeros_like(b, dtype=np.float64)
-#             rreal, rimag = b.real.copy(), b.imag.copy()
-#             status = ctx.funs.solve(sys, indptr, indx,
-#                                     mreal, mimag, sreal, simag, rreal, rimag,
-#                                     ctx._numeric, ctx.control, ctx.info)
-#             sol.real, sol.imag = sreal, simag
-
-#         return sol
-
-#     def matvec(self, mat, vec, transpose):
-#         if transpose:
-#             mat = mat[self.mask_T]
-#             A = csc_matrix((mat, self.index_T, self.indptr_T),
-#                            shape=(vec.shape[0], vec.shape[0]))
-#         else:
-#             mat = mat[self.mask]
-#             A = csc_matrix((mat, self.index, self.indptr),
-#                            shape=(vec.shape[0], vec.shape[0]))
-#         return A.dot(vec)
-
 #---------------------
 
 # Abstract eval for both matvec and spsolve
@@ -232,7 +122,6 @@ def _abstract_eval(data, b, *, solver_num, transpose=False, n_cpu=None, _mode=0)
         return core.ShapedArray((data.shape[0], b.shape[0]), b.dtype)
     else:  # should't reach here as handling is done in _spsolve_batch
         raise NotImplementedError()
-
 # ----------------
 
 # custom matvec primitive ----------------------------------------------------
@@ -242,37 +131,11 @@ def matvec(mat, vec, *, solver_num, transpose=False, n_cpu=None, _mode=0):
     return _matvec_p.bind(mat, vec, solver_num=solver_num, transpose=transpose,
                           n_cpu=n_cpu, _mode=_mode)
 
-
 def _matvec_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
     args = [data, b]
 
     def _callback(data, b, **kwargs):
-        print('MATVEC GOT CALLED')
         res = _SOLVER_STATE.matvec(data, b, solver_num, transpose, n_cpu, _mode)
-        # if _mode == 0:
-        #     return (s_state.matvec(data, b, transpose),)
-
-        # if _mode == 1:
-        #     res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
-        #     for i in range(data.shape[0]):
-        #         res[i, :] = s_state.matvec(data[i, :], b, transpose)
-        # elif _mode == 2:
-        #     res = np.zeros_like(b)
-        #     for i in range(b.shape[0]):
-        #         res[i, :] = s_state.matvec(data, b[i, :], transpose)
-        # elif _mode == 3:
-        #     res = np.zeros_like(b)
-        #     for i in range(b.shape[0]):
-        #         res[i, :] = s_state.matvec(data[i, :], b[i, :], transpose)
-        # elif _mode == 4:
-        #     res = np.zeros_like(b)
-        #     for i in range(b.shape[1]):
-        #         for j in range(b.shape[0]):
-        #             res[j, i, :] = s_state.matvec(data[i, :],
-        #                                           b[j, i, :], transpose).astype(b.dtype)
-        # else:
-        #     raise NotImplementedError()
-
         return (res,)
 
     result, _, _ = mlir.emit_python_callback(
@@ -296,14 +159,12 @@ def _matvec_transpose(ct, data, v, **kwargs):
         row, col = patt[:, 0], patt[:, 1]
         return ct[..., row] * v[..., col], v
 
-
 _matvec_p = core.Primitive('custom_matvec')
 _matvec_p.def_impl(functools.partial(xla.apply_primitive, _matvec_p))
 _matvec_p.def_abstract_eval(_abstract_eval)
 ad.defjvp(_matvec_p, _matvec_jvp_mat, _matvec_jvp_vec)
 ad.primitive_transposes[_matvec_p] = _matvec_transpose
 mlir.register_lowering(_matvec_p, _matvec_cpu_lowering, platform='cpu')
-
 #--------------------------------------------------------------------
 
 # custom spsolve --------------------------------------------------------------
@@ -312,30 +173,6 @@ def _spsolve_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
 
     def _callback(data, b, **kwargs):
         res = _SOLVER_STATE.solve(data, b, solver_num, transpose, n_cpu, _mode)
-        # if _mode == 0:
-        #     return (s_state.solve(data, b, transpose),)
-
-        # if _mode == 1:
-        #     res = np.zeros((data.shape[0], b.shape[0]), dtype=b.dtype)
-        #     for i in range(data.shape[0]):
-        #         res[i, :] = s_state.solve(data[i, :], b, transpose)
-        # elif _mode == 2:
-        #     res = np.zeros_like(b)
-        #     for i in range(b.shape[0]):
-        #         res[i, :] = s_state.solve(data, b[i, :], transpose)
-        # elif _mode == 3:
-        #     res = np.zeros_like(b)
-        #     for i in range(b.shape[0]):
-        #         res[i, :] = s_state.solve(data[i, :], b[i, :], transpose)
-        # elif _mode == 4:
-        #     res = np.zeros_like(b)
-        #     for i in range(b.shape[1]):
-        #         for j in range(b.shape[0]):
-        #             res[j, i, :] = s_state.solve(data[i, :],
-        #                                          b[j, i, :], transpose).astype(b.dtype)
-        # else:
-        #     raise NotImplementedError()
-
         return (res,)
 
     result, _, _ = mlir.emit_python_callback(
@@ -368,7 +205,6 @@ def _spsolve_transpose(ct, data, b, **kwds):
         # Should never reach here, because JVP is linear wrt data.
         raise NotImplementedError("spsolve transpose with respect to data")
 
-
 _spsolve_p = core.Primitive('cpu_spsolve')
 _spsolve_p.def_impl(functools.partial(xla.apply_primitive, _spsolve_p))
 _spsolve_p.def_abstract_eval(_abstract_eval)
@@ -376,14 +212,12 @@ ad.defjvp(_spsolve_p, _spsolve_jvp_lhs, _spsolve_jvp_rhs)
 ad.primitive_transposes[_spsolve_p] = _spsolve_transpose
 mlir.register_lowering(_spsolve_p, _spsolve_cpu_lowering, platform='cpu')
 
-
 def spsolve(data, b, *, solver_num: int, transpose=False, n_cpu=None, _mode=0):
     """A sparse direct solver, based on scipy.sparse.linalg.spsolve."""
     if n_cpu == 0:
         n_cpu = cpu_count()
     return _spsolve_p.bind(data, b, solver_num=solver_num,
                            transpose=transpose, n_cpu=n_cpu, _mode=_mode)
-
 
 # Batching _mode`s:
 # 0 - no vectorization
