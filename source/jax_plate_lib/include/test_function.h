@@ -20,23 +20,22 @@ py::array_t<double> test_function(const py::array_t<double, py::array::c_style>&
     py::buffer_info buf_x = _x.request();
     auto* x = static_cast<double*>(buf_x.ptr);
     auto len = buf_x.shape[0];
-//     auto x = _x.unchecked<1>();
-//     auto len = _x.shape(0);
     vector<double> y(len);
 
-    cout << "UMFPACK timer: " << umfpack_timer() << endl;
+    std::string inside = "INSIDE CPP CODE: ";
+
+    cout << inside <<  "UMFPACK timer value: " << umfpack_timer() << endl;
 
     int n = pool_size.cast<int>();
     omp_set_num_threads(n);
 
     py::gil_scoped_release rel;
 
-#pragma omp parallel for
+    #pragma omp parallel for
     for (int i = 0; i < len; i++) {
-#ifdef DEBUG
         if (i == 0)
-            cout << omp_get_num_threads() << ' ' << omp_get_thread_num() << endl;
-#endif
+            cout << inside << "Threads working: " << omp_get_num_threads() << '\n'
+            << inside <<  "Current thread: " <<  omp_get_thread_num() << endl;
         y[i] = 2 * x[i] + sin(x[i]);
     }
 
