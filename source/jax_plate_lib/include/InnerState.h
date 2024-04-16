@@ -7,7 +7,7 @@
 #include <pybind11/pybind11.h>
 #include <pybind11/numpy.h>
 
-//#include "csc_matvec.h"
+#include "csc_matvec.h"
 #include "umfpack_interface.h"
 
 constexpr bool DEBUG = true;
@@ -40,16 +40,6 @@ vector<T> arr_to_vec(const py::array_t<T, py::array::c_style> arr){
     vector<T> res;
     res.insert(res.end(), &ptr[0], &ptr[len]);
     return res;
-}
-
-template <class T, class S>
-inline void check_status(T status, S where) {
-    if (status != UMFPACK_OK) {
-        auto mes = std::string("UMFPACK Error with code ") +
-            std::to_string(status) + std::string("\nhappened in ") +
-            std::string(where);
-        throw std::runtime_error(mes);
-    }
 }
 
 /*
@@ -168,7 +158,7 @@ public:
 
         auto status = umfpack::symbolic(N, N, indptr_vec.data(), indices_vec.data(),
                                         (T*)NULL, &symbolics[symb_i], (double*)NULL, (double *)NULL);
-        check_status(status, "InnerState::add_mat in umfpack::symbolic.");
+        umfpack::check_status(status, "InnerState::add_mat in umfpack::symbolic.");
     }
 
     template<class T, class I>
@@ -252,10 +242,10 @@ public:
             int s;
             s = umfpack::numeric(Ap.data(), Ai.data(), data, symbolics[num],
                                  &numeric, (double *)NULL, (double *)NULL);
-            check_status(s, "InnerState::solve in mode == 0 umfpack::numeric.");
+            umfpack::check_status(s, "InnerState::solve in mode == 0 umfpack::numeric.");
             s = umfpack::solve(sys, Ap.data(), Ai.data(), data,
                            res_ptr, b, numeric, (double*)NULL, (double*)NULL);
-            check_status(s, "InnerState::solve in mode == 0 umfpack::solve.");
+            umfpack::check_status(s, "InnerState::solve in mode == 0 umfpack::solve.");
             umfpack::free_numeric<T, I>(&numeric);
         } else if (mode == 1) {
             #pragma omp parallel for
@@ -264,10 +254,10 @@ public:
                 int s;
                 s = umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
                                      &numeric, (double *)NULL, (double *)NULL);
-                check_status(s, "InnerState::solve in mode == 1 umfpack::numeric.");
+                umfpack::check_status(s, "InnerState::solve in mode == 1 umfpack::numeric.");
                 s = umfpack::solve(sys, Ap.data(), Ai.data(), &data[data_N * i],
                                    &res_ptr[mat_N * i], b, numeric, (double*)NULL, (double*)NULL);
-                check_status(s, "InnerState::solve in mode == 1 umfpack::solve.");
+                umfpack::check_status(s, "InnerState::solve in mode == 1 umfpack::solve.");
                 umfpack::free_numeric<T, I>(&numeric);
             }
         } else if (mode == 2) {
@@ -277,10 +267,10 @@ public:
                 int s;
                 s = umfpack::numeric(Ap.data(), Ai.data(), data, symbolics[num],
                                      &numeric, (double *)NULL, (double *)NULL);
-                check_status(s, "InnerState::solve in mode == 2 umfpack::numeric.");
+                umfpack::check_status(s, "InnerState::solve in mode == 2 umfpack::numeric.");
                 s = umfpack::solve(sys, Ap.data(), Ai.data(), data,
                                    &res_ptr[mat_N * i], &b[mat_N * i], numeric, (double*)NULL, (double*)NULL);
-                check_status(s, "InnerState::solve in mode == 2 umfpack::solve.");
+                umfpack::check_status(s, "InnerState::solve in mode == 2 umfpack::solve.");
                 umfpack::free_numeric<T, I>(&numeric);
             }
         } else if (mode == 3) {
@@ -290,10 +280,10 @@ public:
                 int s;
                 s = umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
                                      &numeric, (double *)NULL, (double *)NULL);
-                check_status(s, "InnerState::solve in mode == 3 umfpack::numeric.");
+                umfpack::check_status(s, "InnerState::solve in mode == 3 umfpack::numeric.");
                 s = umfpack::solve(sys, Ap.data(), Ai.data(), &data[data_N * i],
                                    &res_ptr[mat_N * i], &b[mat_N * i], numeric, (double*)NULL, (double*)NULL);
-                check_status(s, "InnerState::solve in mode == 3 umfpack::solve.");
+                umfpack::check_status(s, "InnerState::solve in mode == 3 umfpack::solve.");
                 umfpack::free_numeric<T, I>(&numeric);
             }
         } else if (mode == 4) {
@@ -304,11 +294,11 @@ public:
                     int s;
                     s = umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
                                          &numeric, (double *)NULL, (double *)NULL);
-                    check_status(s, "InnerState::solve in mode == 4 umfpack::numeric.");
+                    umfpack::check_status(s, "InnerState::solve in mode == 4 umfpack::numeric.");
                     auto idx = mat_N * (i + j * b_shape_1);
                     s = umfpack::solve(sys, Ap.data(), Ai.data(), &data[data_N * i],
                                        &res_ptr[idx], &b[idx], numeric, (double*)NULL, (double*)NULL);
-                    check_status(s, "InnerState::solve in mode == 4 umfpack::solve.");
+                    umfpack::check_status(s, "InnerState::solve in mode == 4 umfpack::solve.");
                     umfpack::free_numeric<T, I>(&numeric);
                 }
             }
@@ -317,7 +307,105 @@ public:
         return res;
     }
 
-    void matvec();
+    template<class T, class I>
+    py::array_t<T, py::array::c_style> matvec(const py::array_t<T, py::array::c_style> arg_mat,
+                                              const py::array_t<T, py::array::c_style> arg_vec,
+                                              const py::int_& solver_num,
+                                              const py::bool_& arg_transpose,
+                                              const py::int_& arg_n_cpu,
+                                              const py::int_& arg_mode) {
+        auto* mat = get_arr_ptr(arg_mat);
+        auto* vec = get_arr_ptr(arg_vec);
+
+        const bool transpose = static_cast<bool>(arg_transpose);
+
+        auto num = static_cast<I>(solver_num);
+
+        const auto& Ai = transpose ? inds_T.get(num) : inds.get(num);
+        const auto& Ap = transpose ? indptrs_T.get(num) : indptrs.get(num);
+        const auto& perm = permutations.get(num);
+
+        const auto n_cpu = static_cast<int>(arg_n_cpu);
+        const auto mode = static_cast<int16_t>(arg_mode);
+
+        ShapeContainer res_shape;
+
+        size_t b_shape_0 = arg_vec.shape(0);
+        size_t data_shape_0 = arg_mat.shape(0);
+        size_t mat_N, data_shape_1, b_shape_1, b_shape_2, data_N;
+        switch (mode) {
+            case 0:
+                mat_N = b_shape_0;
+                data_N = arg_mat.shape(0);
+                res_shape = ShapeContainer({mat_N});
+                break;
+
+            case 1:
+                data_shape_1 = arg_mat.shape(1);
+                data_N = data_shape_1;
+                mat_N = b_shape_0;
+                res_shape = ShapeContainer({data_shape_0, mat_N});
+                break;
+
+            case 2:
+                data_N = data_shape_0;
+                b_shape_1 = arg_vec.shape(1);
+                mat_N = b_shape_1;
+                res_shape = ShapeContainer({b_shape_0, mat_N});
+                break;
+
+            case 3:
+                data_shape_1 = arg_mat.shape(1);
+                data_N = data_shape_1;
+                b_shape_1 = arg_vec.shape(1);
+                mat_N = b_shape_1;
+                res_shape = ShapeContainer({b_shape_0, mat_N});
+                break;
+
+            case 4:
+                data_shape_1 = arg_mat.shape(1);
+                data_N = data_shape_1;
+                b_shape_1 = arg_vec.shape(1);
+                b_shape_2 = arg_vec.shape(2);
+                mat_N = b_shape_2;
+                res_shape = ShapeContainer({b_shape_0, b_shape_1, mat_N});
+                break;
+
+            default:
+                throw std::runtime_error("Invalid `mode` argument in InnerState::matvec().");
+        }
+
+        I n_col = static_cast<I>(mat_N);
+
+        py::array_t<T, py::array::c_style> res(res_shape);
+        auto res_size = res.size();
+        auto res_ptr = get_arr_ptr(res);
+        auto res_double_ptr = reinterpret_cast<double *>(res_ptr);
+
+        unsigned size_mult = 1;
+        if constexpr (std::is_same_v<T, complex128_t>)
+            size_mult = 2;
+
+        for (auto i = 0; i < size_mult * res_size; i++)
+            res_double_ptr[i] = 0.0;
+
+        omp_set_num_threads(n_cpu);
+        py::gil_scoped_release rel;
+
+        if (transpose) {
+            if (mode == 0) {
+                csc_matvec_transpose(n_col, Ap.data(), Ai.data(),
+                                     mat, vec, perm.data(), res_ptr);
+            }
+        } else {
+            if (mode == 0) {
+                csc_matvec(n_col, Ap.data(), Ai.data(),
+                           mat, vec, res_ptr);
+            }
+        }
+        py::gil_scoped_acquire acq;
+        return res;
+    }
 };
 
 #endif //JAX_PLATE_LIB_INNERSTATE_H

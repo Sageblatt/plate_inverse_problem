@@ -7,6 +7,16 @@
 using complex128_t = std::complex<double>;
 
 namespace umfpack {
+    template <class T, class S>
+    inline void check_status(T status, S where) {
+        if (status != UMFPACK_OK) {
+            auto mes = std::string("UMFPACK Error with code ") +
+                       std::to_string(status) + std::string("\nhappened in ") +
+                       std::string(where);
+            throw std::runtime_error(mes);
+        }
+    }
+
     int symbolic(int32_t n_row,
                  int32_t n_col,
                  const int32_t Ap[],

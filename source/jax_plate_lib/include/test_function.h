@@ -9,7 +9,6 @@
 #include <omp.h>
 #include <umfpack.h>
 
-#define DEBUG
 
 namespace py = pybind11;
 using std::vector;

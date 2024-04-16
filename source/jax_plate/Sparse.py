@@ -38,8 +38,8 @@ class SolverState:
     def solve(self, data, b, solver_num, transpose, n_cpu, _mode):
         return self.state.solve(data, b, solver_num, transpose, n_cpu, _mode)
 
-    def matvec():
-        pass
+    def matvec(self, mat, vec, solver_num, transpose, n_cpu, _mode):
+        return self.state.matvec(mat, vec, solver_num, transpose, n_cpu, _mode)
 
 
 _SOLVER_STATE = SolverState()
@@ -98,7 +98,6 @@ def create_symbolic(N: int,
     perm = find_permutation(indices_T, coo_indices_T)
 
     res = _SOLVER_STATE.add_mat(mat, mat_T, coo_indices, perm)
-    # return coo_indices, res
     return (m1.row, m1.col), res
 
 
@@ -238,6 +237,8 @@ def _abstract_eval(data, b, *, solver_num, transpose=False, n_cpu=None, _mode=0)
 
 # custom matvec primitive ----------------------------------------------------
 def matvec(mat, vec, *, solver_num, transpose=False, n_cpu=None, _mode=0):
+    if n_cpu == 0:
+        n_cpu = cpu_count()
     return _matvec_p.bind(mat, vec, solver_num=solver_num, transpose=transpose,
                           n_cpu=n_cpu, _mode=_mode)
 
@@ -247,7 +248,7 @@ def _matvec_cpu_lowering(ctx, data, b, *, solver_num, transpose, n_cpu, _mode):
 
     def _callback(data, b, **kwargs):
         print('MATVEC GOT CALLED')
-        res = _SOLVER_STATE.matvec()
+        res = _SOLVER_STATE.matvec(data, b, solver_num, transpose, n_cpu, _mode)
         # if _mode == 0:
         #     return (s_state.matvec(data, b, transpose),)
 
