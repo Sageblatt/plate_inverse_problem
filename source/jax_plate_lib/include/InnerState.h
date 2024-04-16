@@ -10,7 +10,7 @@
 #include "csc_matvec.h"
 #include "umfpack_interface.h"
 
-constexpr bool DEBUG = true;
+constexpr bool DEBUG = false; // Set to `true` to see debug output
 
 using std::vector;
 using std::array;
