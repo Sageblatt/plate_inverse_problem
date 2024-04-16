@@ -18,9 +18,7 @@ namespace py = pybind11;
 
 using ShapeContainer = py::detail::any_container<ssize_t>;
 
-// TODO:
-// add matvec
-//
+// TODO: fight with code duplication
 
 /*
  * Helper functions
@@ -103,7 +101,7 @@ public:
     }
 
     ~InnerState() {
-        for (auto i = 0; i < symbolics.size(); i++) {
+        for (size_t i = 0; i < symbolics.size(); i++) {
             if (symb_types[i] == 0)
                 umfpack::free_symbolic<double, int32_t>(&symbolics[i]);
             else if (symb_types[i] == 1)
@@ -249,7 +247,7 @@ public:
             umfpack::free_numeric<T, I>(&numeric);
         } else if (mode == 1) {
             #pragma omp parallel for
-            for (auto i = 0; i < data_shape_0; i++) {
+            for (size_t i = 0; i < data_shape_0; i++) {
                 void* numeric;
                 int s;
                 s = umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
@@ -262,7 +260,7 @@ public:
             }
         } else if (mode == 2) {
             #pragma omp parallel for
-            for (auto i = 0; i < b_shape_0; i++) {
+            for (size_t i = 0; i < b_shape_0; i++) {
                 void* numeric;
                 int s;
                 s = umfpack::numeric(Ap.data(), Ai.data(), data, symbolics[num],
@@ -275,7 +273,7 @@ public:
             }
         } else if (mode == 3) {
             #pragma omp parallel for
-            for (auto i = 0; i < data_shape_0; i++) {
+            for (size_t i = 0; i < data_shape_0; i++) {
                 void* numeric;
                 int s;
                 s = umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
@@ -287,9 +285,9 @@ public:
                 umfpack::free_numeric<T, I>(&numeric);
             }
         } else if (mode == 4) {
-            for (auto j = 0; j < b_shape_0; j++) {
+            for (size_t j = 0; j < b_shape_0; j++) {
                 #pragma omp parallel for
-                for (auto i = 0; i < b_shape_1; i++) {
+                for (size_t i = 0; i < b_shape_1; i++) {
                     void* numeric;
                     int s;
                     s = umfpack::numeric(Ap.data(), Ai.data(), &data[data_N * i], symbolics[num],
@@ -382,11 +380,11 @@ public:
         auto res_ptr = get_arr_ptr(res);
         auto res_double_ptr = reinterpret_cast<double *>(res_ptr);
 
-        unsigned size_mult = 1;
+        size_t size_mult = 1;
         if constexpr (std::is_same_v<T, complex128_t>)
             size_mult = 2;
 
-        for (auto i = 0; i < size_mult * res_size; i++)
+        for (size_t i = 0; i < size_mult * res_size; i++)
             res_double_ptr[i] = 0.0;
 
         omp_set_num_threads(n_cpu);
@@ -396,11 +394,73 @@ public:
             if (mode == 0) {
                 csc_matvec_transpose(n_col, Ap.data(), Ai.data(),
                                      mat, vec, perm.data(), res_ptr);
+            } else if (mode == 1) {
+                #pragma omp parallel for
+                for (size_t i = 0; i < data_shape_0; i++) {
+                    csc_matvec_transpose(n_col, Ap.data(), Ai.data(),
+                                         &mat[data_N * i], vec,
+                                         perm.data(), &res_ptr[mat_N * i]);
+                }
+            } else if (mode == 2) {
+                #pragma omp parallel for
+                for (size_t i = 0; i < b_shape_0; i++) {
+                    csc_matvec_transpose(n_col, Ap.data(), Ai.data(),
+                                         mat, &vec[mat_N * i],
+                                         perm.data(), &res_ptr[mat_N * i]);
+                }
+            } else if (mode == 3) {
+                #pragma omp parallel for
+                for (size_t i = 0; i < data_shape_0; i++) {
+                    csc_matvec_transpose(n_col, Ap.data(), Ai.data(),
+                                         &mat[data_N * i], &vec[mat_N * i],
+                                         perm.data(), &res_ptr[mat_N * i]);
+                }
+            } else if (mode == 4) {
+                for (size_t j = 0; j < b_shape_0; j++) {
+                    #pragma omp parallel for
+                    for (size_t i = 0; i < b_shape_1; i++) {
+                        auto idx = mat_N * (i + j * b_shape_1);
+                        csc_matvec_transpose(n_col, Ap.data(), Ai.data(),
+                                             &mat[data_N * i], &vec[idx],
+                                             perm.data(), &res_ptr[idx]);
+                    }
+                }
             }
-        } else {
+        } else { // transpose == false
             if (mode == 0) {
                 csc_matvec(n_col, Ap.data(), Ai.data(),
                            mat, vec, res_ptr);
+            } else if (mode == 1) {
+                #pragma omp parallel for
+                for (size_t i = 0; i < data_shape_0; i++) {
+                    csc_matvec(n_col, Ap.data(), Ai.data(),
+                               &mat[data_N * i], vec,
+                               &res_ptr[mat_N * i]);
+                }
+            } else if (mode == 2) {
+                #pragma omp parallel for
+                for (size_t i = 0; i < b_shape_0; i++) {
+                    csc_matvec(n_col, Ap.data(), Ai.data(),
+                               mat, &vec[mat_N * i],
+                               &res_ptr[mat_N * i]);
+                }
+            } else if (mode == 3) {
+                #pragma omp parallel for
+                for (size_t i = 0; i < data_shape_0; i++) {
+                    csc_matvec(n_col, Ap.data(), Ai.data(),
+                               &mat[data_N * i], &vec[mat_N * i],
+                               &res_ptr[mat_N * i]);
+                }
+            } else if (mode == 4) {
+                for (size_t j = 0; j < b_shape_0; j++) {
+                    #pragma omp parallel for
+                    for (size_t i = 0; i < b_shape_1; i++) {
+                        auto idx = mat_N * (i + j * b_shape_1);
+                        csc_matvec(n_col, Ap.data(), Ai.data(),
+                                   &mat[data_N * i], &vec[idx],
+                                   &res_ptr[idx]);
+                    }
+                }
             }
         }
         py::gil_scoped_acquire acq;
