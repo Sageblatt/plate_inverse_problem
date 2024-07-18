@@ -22,10 +22,10 @@ def getOutput(fname: str):
         # Stiffness terms depending on each of the anisotropic coefs
         K11="int2d(Th)(dxx(u)*dxx(v)) + on(1, u=0, ux=0, uy=0)",
         K12="int2d(Th)(dyy(u)*dxx(v) + dxx(u)*dyy(v)) + on(1, u=0, ux=0, uy=0)",
-        K16="int2d(Th)(dxy(u)*dxx(v) + 2.*dxx(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
+        K16="int2d(Th)(2.*dxy(u)*dxx(v) + 2.*dxx(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
         K22="int2d(Th)(dyy(u)*dyy(v)) + on(1, u=0, ux=0, uy=0)",
-        K26="int2d(Th)(dxy(u)*dyy(v) + 2.*dyy(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
-        K66="int2d(Th)(2.*dxy(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
+        K26="int2d(Th)(2.*dxy(u)*dyy(v) + 2.*dyy(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
+        K66="int2d(Th)(4.*dxy(u)*dxy(v)) + on(1, u=0, ux=0, uy=0)",
         # Rotational inertia term
         L="int2d(Th)(dx(u)*dx(v) + dy(u)*dy(v)) + on(1, u=0, ux=0, uy=0)",
         # Mass matrix

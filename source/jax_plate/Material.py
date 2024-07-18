@@ -194,7 +194,7 @@ class Isotropic(Material):
             nu = E / (2.0 * G) - 1.0
             D = E * _h ** 3 / (12.0 * (1.0 - nu ** 2))
 
-            Ds = jnp.array([D, nu * D, 0.0, D, 0.0, D * (1.0 - nu)]) * (1 + 1j * beta)
+            Ds = jnp.array([D, nu * D, 0.0, D, 0.0, D * (1 - nu) / 2]) * (1 + 1j * beta)
             return Ds
 
         return Partial(_transform, _h=h)
@@ -353,7 +353,7 @@ class SOL(Orthotropic):
         D = sp.zeros(3)
 
         for i in range(self.angles.size):
-            D += T(self.angles[i]) @ Q @ T(self.angles[i]) * zd[i]
+            D += T(self.angles[i]) @ Q @ T(self.angles[i]).T * zd[i]
 
         D /= 3
 
