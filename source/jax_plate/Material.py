@@ -34,6 +34,8 @@ class Material(abc.ABC):
         Materials density in kg/m^3.
     Elastic moduli : floats
         Attributes listed in jax_plate.Material.ATYPES for each anisotropy type.
+    is_mps : bool
+        `Is midplane symmetric` -- this attribute impacts the choice of solver.
 
     """
     def get_parameters(self) -> jax.Array | None:
@@ -113,7 +115,7 @@ class Material(abc.ABC):
     # @abc.abstractmethod
     # def check_parameters(self) -> bool:
     #     """
-    #     Method that checks if parameters are correct. For instance, in isotropic
+    #     Method that checks if parameters are correct. For instance, for isotropic
     #     material Young's modulus E cannot be negative.
 
     #     Returns
@@ -177,6 +179,8 @@ class Isotropic(Material):
                  G: float | None = None,
                  beta: float | None = None):
         self.density = density
+        self.is_mps = True
+
         self.E = E
         self.G = G
         self.beta = beta
@@ -208,6 +212,7 @@ class Orthotropic(Material):
                  nu12: float | None = None,
                  beta: float | None = None):
         self.density = density
+        self.is_mps = True
 
         self.E1 = E1
         self.E2 = E2
@@ -252,6 +257,7 @@ class OrthotropicD4(Material):
                  b3: float | None = None,
                  b4: float | None = None):
         self.density = density
+        self.is_mps = True
 
         self.E1 = E1
         self.E2 = E2
@@ -306,13 +312,16 @@ class SOL(Orthotropic):
 
         self.angles = np.array(angles)
 
+        if np.sum(np.abs(self.angles - self.angles[::-1])) > 1e-6:
+            self.is_mps = False
+
     def get_save_dict(self):
         sup_dict = super().get_save_dict()
         return ({x: sup_dict[x] for x in sup_dict if x != '_Q_to_D_matrix'} |
                 {'angles': list(self.angles)})
 
     @functools.cached_property
-    def _Q_to_D_matrix(self):
+    def _Q_to_ABD_matrices(self):
         Q11, Q12, Q22, Q26, Q16, Q66, h = sp.symbols('Q_11 Q_12 Q_22 Q_26 Q_16 Q_66 h')
 
         Q = sp.zeros(3)
@@ -341,7 +350,10 @@ class SOL(Orthotropic):
 
             return sp.Array(res)
 
-        z = linspace(self.angles.size).applyfunc(lambda x: x**3)
+        zs = linspace(self.angles.size)
+        z1 = zs
+        z2 = zs.applyfunc(lambda x: x**2)
+        z3 = zs.applyfunc(lambda x: x**3)
 
         def diff(arr):
             res = []
@@ -349,41 +361,91 @@ class SOL(Orthotropic):
                 res.append(arr[i] - arr[i-1])
             return res
 
-        zd = diff(z)
+        zd1 = diff(z1)
+        zd2 = diff(z2)
+        zd3 = diff(z3)
+
+        A = sp.zeros(3)
+        B = sp.zeros(3)
         D = sp.zeros(3)
 
         for i in range(self.angles.size):
-            D += T(self.angles[i]) @ Q @ T(self.angles[i]).T * zd[i]
+            QT = T(self.angles[i]) @ Q @ T(self.angles[i]).T
+            A += QT * zd1[i]
+            B += QT * zd2[i]
+            D += QT * zd3[i]
 
+        B /= 2
         D /= 3
 
-        A, _ = linear_eq_to_matrix([D[0, 0],
+        A, _ = linear_eq_to_matrix([A[0, 0],
+                                    A[0, 1],
+                                    A[0, 2],
+                                    A[1, 1],
+                                    A[1, 2],
+                                    A[2, 2]],
+                                   (Q11, Q12, Q16, Q22, Q26, Q66))
+
+        B, _ = linear_eq_to_matrix([B[0, 0],
+                                    B[0, 1],
+                                    B[0, 2],
+                                    B[1, 1],
+                                    B[1, 2],
+                                    B[2, 2]],
+                                   (Q11, Q12, Q16, Q22, Q26, Q66))
+
+        D, _ = linear_eq_to_matrix([D[0, 0],
                                     D[0, 1],
                                     D[0, 2],
                                     D[1, 1],
                                     D[1, 2],
                                     D[2, 2]],
                                    (Q11, Q12, Q16, Q22, Q26, Q66))
-        return A
+        return A, B, D
 
     def get_transform(self, h: float) -> Callable:
-        _mat = self._Q_to_D_matrix
+        if self.is_mps:
+            _, _, _mat = self._Q_to_ABD_matrices
 
-        A = np.array(_mat.evalf(subs={'h': h}), dtype=np.float64)
+            A = np.array(_mat.evalf(subs={'h': h}), dtype=np.float64)
 
-        def _transform(params, *args, _M):
-            E1 = params[0]
-            E2 = params[1]
-            G12 = params[2]
-            nu12 = params[3]
-            beta = params[4]
+            def _transform(params, *args, _M):
+                E1 = params[0]
+                E2 = params[1]
+                G12 = params[2]
+                nu12 = params[3]
+                beta = params[4]
 
-            den = 1 - E1 / E2 * nu12 ** 2
-            Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
-            Ds = (_M @ Q)  * (1 + 1j * beta)
-            return Ds
+                den = 1 - E1 / E2 * nu12 ** 2
+                Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
+                Ds = (_M @ Q)  * (1 + 1j * beta)
+                return Ds
 
-        return Partial(_transform, _M=A)
+            return Partial(_transform, _M=A)
+
+        else:
+            _matA, _matB, _matD = self._Q_to_ABD_matrices
+
+            A = np.array(_matA.evalf(subs={'h': h}), dtype=np.float64)
+            B = np.array(_matB.evalf(subs={'h': h}), dtype=np.float64)
+            D = np.array(_matD.evalf(subs={'h': h}), dtype=np.float64)
+
+            def _transform(params, *args, _MA, _MB, _MD):
+                E1 = params[0]
+                E2 = params[1]
+                G12 = params[2]
+                nu12 = params[3]
+                beta = params[4]
+
+                den = 1 - E1 / E2 * nu12 ** 2
+                Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
+                As = (_MA @ Q)  * (1 + 1j * beta)
+                Bs = (_MB @ Q)  * (1 + 1j * beta)
+                Ds = (_MD @ Q)  * (1 + 1j * beta)
+                return As, Bs, Ds
+
+            return Partial(_transform, _MA=A, _MB=B, _MD=D)
+
 
 class SymmetricalSOL(SOL):
     """Simple Orthotropic Laminate with layers with E1=E2"""
@@ -407,23 +469,47 @@ class SymmetricalSOL(SOL):
         return (self.E1, self.G12, self.nu12, self.beta)
 
     def get_transform(self, h: float) -> Callable:
-        _mat = self._Q_to_D_matrix
+        if self.is_mps:
+            _, _, _mat = self._Q_to_ABD_matrices
 
-        A = np.array(_mat.evalf(subs={'h': h}), dtype=np.float64)
+            A = np.array(_mat.evalf(subs={'h': h}), dtype=np.float64)
 
-        def _transform(params, *args, _M):
-            E1 = params[0]
-            E2 = params[0]
-            G12 = params[1]
-            nu12 = params[2]
-            beta = params[3]
+            def _transform(params, *args, _M):
+                E1 = params[0]
+                E2 = params[0]
+                G12 = params[1]
+                nu12 = params[2]
+                beta = params[3]
 
-            den = 1 - E1 / E2 * nu12 ** 2
-            Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
-            Ds = (_M @ Q) * (1 + 1j * beta)
-            return Ds
+                den = 1 - E1 / E2 * nu12 ** 2
+                Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
+                Ds = (_M @ Q)  * (1 + 1j * beta)
+                return Ds
 
-        return Partial(_transform, _M=A)
+            return Partial(_transform, _M=A)
+
+        else:
+            _matA, _matB, _matD = self._Q_to_ABD_matrices
+
+            A = np.array(_matA.evalf(subs={'h': h}), dtype=np.float64)
+            B = np.array(_matB.evalf(subs={'h': h}), dtype=np.float64)
+            D = np.array(_matD.evalf(subs={'h': h}), dtype=np.float64)
+
+            def _transform(params, *args, _MA, _MB, _MD):
+                E1 = params[0]
+                E2 = params[0]
+                G12 = params[1]
+                nu12 = params[2]
+                beta = params[3]
+
+                den = 1 - E1 / E2 * nu12 ** 2
+                Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
+                As = (_MA @ Q)  * (1 + 1j * beta)
+                Bs = (_MB @ Q)  * (1 + 1j * beta)
+                Ds = (_MD @ Q)  * (1 + 1j * beta)
+                return As, Bs, Ds
+
+            return Partial(_transform, _MA=A, _MB=B, _MD=D)
 
 
 def get_material(main_arg: str | float | int | dict,
