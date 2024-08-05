@@ -46,6 +46,7 @@ def getOutput(fname: str):
         xtest="real",
         ytest="real",
         tgv="real",
+        Th='mesh'
     )
     return script.get_output()
 
@@ -142,5 +143,7 @@ def processFFOutput(ff_output: dict):
         "interpolation_value_from_bc": interpolation_value_from_bc,
         "interpolation_vector": interpolation_vector,
         "test_point_coord": test_point_coord,
-        "constrained_idx": constrained_idx,  # free == not(constrained) so returning both is redundant
+        "constrained_idx": constrained_idx,  # free == not(constrained) so returning both is redundant,
+        "mesh": ff_output['Th'],
+        "boundary_value": f_bc
     }
