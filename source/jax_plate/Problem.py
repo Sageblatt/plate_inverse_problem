@@ -263,8 +263,6 @@ class Problem:
         # and both BC and load may have different phases in points
         # so both of them have to be complex in general
         # but it is too comlicated as for now
-        self.fLoad = np.array(processed_ff_output["fLoad"],
-                              dtype=np.float64).view(StaticNdArrayWrapper)
 
         # Total (regular + rotational) inertia
         self.MInertia = self.rho * (self.M + 1.0 / 3.0 * self.e ** 2 * self.L)
@@ -308,7 +306,7 @@ class Problem:
             test point.
 
         """
-        def _solve(f, params, Ks, fKs, MInertia, fInertia, fLoad,
+        def _solve(f, params, Ks, fKs, MInertia, fInertia,
                    interpolation_vector, interpolation_value_from_bc,
                    transform, solv_num, cpu):
             # solve for one frequency f (in [Hz])
@@ -326,7 +324,7 @@ class Problem:
 
             # MInertia == rho*(M + 1/3 e^2 L)
             A = -(omega ** 2) * MInertia + K
-            b = -(omega ** 2) * fInertia + fK + fLoad
+            b = -(omega ** 2) * fInertia + fK
 
             u = spsolve(A, b, solver_num=solv_num, n_cpu=cpu)
 
@@ -342,7 +340,6 @@ class Problem:
                                          fKs=self.fKs / 2.0 / self.e,
                                          MInertia=self.MInertia,
                                          fInertia=self.fInertia,
-                                         fLoad=self.fLoad / 2.0 / self.e,
                                          interpolation_vector=self.interpolation_vector,
                                          interpolation_value_from_bc=self.interpolation_value_from_bc,
                                          transform=self.material.get_transform(self.geometry.height),
@@ -379,7 +376,7 @@ class Problem:
         if params is None:
             params = self.parameters
 
-        def _solve(f, params, Ks, fKs, MInertia, fInertia, fLoad,
+        def _solve(f, params, Ks, fKs, MInertia, fInertia,
                    transform, solv_num, cpu):
             omega = 2.0 * np.pi * f
 
@@ -389,7 +386,7 @@ class Problem:
             fK = jnp.einsum(fKs, [0, ...], D, [0])
 
             A = -(omega ** 2) * MInertia + K
-            b = -(omega ** 2) * fInertia + fK + fLoad
+            b = -(omega ** 2) * fInertia + fK
 
             u = spsolve(A, b, solver_num=solv_num, n_cpu=cpu)
             return u
@@ -400,7 +397,6 @@ class Problem:
                                         fKs=self.fKs / 2.0 / self.e,
                                         MInertia=self.MInertia,
                                         fInertia=self.fInertia,
-                                        fLoad=self.fLoad / 2.0 / self.e,
                                         transform=self.material.get_transform(self.geometry.height),
                                         solv_num=self.solver_num,
                                         cpu=self.n_cpu)

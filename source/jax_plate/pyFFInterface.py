@@ -45,7 +45,6 @@ def load_matrices_symm(fname: str):
 
     # WARNING: keyword 'array' only works with my upgraded pyFreeFem version from the forked repo in my GitHub
     script += pyff.OutputScript(
-        vLoad="array",
         vBC="array",
         interpC="matrix",
         xtest="real",
@@ -122,7 +121,6 @@ def load_matrices_symm(fname: str):
     )
     interpolation_vector = interpolation_vector[free_idx]
 
-    f_load = np.ravel(ff_output["vLoad"])[free_idx]
     test_point_coord = np.array([ff_output["xtest"], ff_output["ytest"]])
 
     return {
@@ -136,7 +134,6 @@ def load_matrices_symm(fname: str):
         "fMCorrection": fMCorrection,
         "LCorrection": LCorrection,
         "fLCorrection": fLCorrection,
-        "fLoad": f_load,
         "interpolation_value_from_bc": interpolation_value_from_bc,
         "interpolation_vector": interpolation_vector,
         "test_point_coord": test_point_coord,
