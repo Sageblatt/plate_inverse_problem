@@ -21,6 +21,32 @@ def load_matrices_symm(fname: str):
         _script = ifile.read()
     script = pyff.edpScript(_script)
 
+    script += """
+    // Boundary condition u = funcBc on Dirichlet border
+    func funcBC = 1; // 1 is default
+    // Indicator of the area occupied by the accelerometer (to correct the mass matrix)
+    func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - offsetAccelY)^2));
+
+    fespace Vh(Th, P2Morley);
+    Vh [u, ux, uy], [v, vx, vy];
+
+    varf BC([u, ux, uy], [v, vx, vy]) = on(1, u=funcBC, ux=0, uy=0);
+    real[int] vBC = BC(0, Vh, tgv=-1);
+
+    // DIRTY HACK: i create a small triangle close to rtest
+    // so that even if I fuck up with indices, the difference will not be too large
+    real[int] xxtest = [xtest, xtest + 1e-8, xtest + 1e-8];
+    real[int] yytest = [ytest, ytest - 1e-8, ytest + 1e-8];
+    // Create a surrogate mesh to produce interpolation matrix
+    mesh testTh = triangulate(xxtest, yytest);
+    // Create a surrogate FE space with P1 basis functions on testTh
+    // As P1 basis functions are standard triangular <<caps>> which are equal to 1
+    // in nodes, the DOF in this basis are exactly u(x_i, y_i)
+    fespace testVh(testTh, P1);
+    int[int] u2vc = [0];
+    matrix MinterpC = interpolate(testVh, Vh, U2Vc=u2vc);
+    """
+
     # WARNING: all parts of the Dirichlet BC should be labelled 1
     # ensure it in _problem.edp
     script += pyff.VarfScript(
