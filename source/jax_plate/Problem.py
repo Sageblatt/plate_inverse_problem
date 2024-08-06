@@ -17,7 +17,7 @@ from jax_plate.Accelerometer import Accelerometer, AccelerometerParams
 from jax_plate.Material import Material, get_material
 from jax_plate.Geometry import Geometry, GeometryParams
 from jax_plate.Input import Compressor
-from jax_plate.pyFFInterface import getOutput, processFFOutput
+from jax_plate.pyFFInterface import load_matrices_symm
 from jax_plate.Utils import get_source_dir
 from jax_plate.Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 from jax_plate.Optimizers import optResult
@@ -225,7 +225,7 @@ class Problem:
         self.e = self.geometry.height / 2.0
         self.rho = self.material.density
 
-        processed_ff_output = processFFOutput(getOutput(self.geometry.current_file))
+        processed_ff_output = load_matrices_symm(self.geometry.current_file)
 
         m_names = ['M', 'L', "MCorrection", "LCorrection"]
         matrices = []

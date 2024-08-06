@@ -7,8 +7,13 @@ MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
 # TODO make it local
 tgv = 1e30
 
+def load_matrices_symm(fname: str):
+    """Processes output of FreeFEM, returns matrices ready to be used in jax model
+        with rhs defined by Dirichlet BC. (Midplane-symmetrical plates)
 
-def getOutput(fname: str):
+        :param ff_output: result of FreeFem execution
+        :type ff_output: dict
+    """
     # load file with preliminaries related to FreeFem
     # mesh generation/input and definition of test point(s)
     # is here
@@ -48,55 +53,47 @@ def getOutput(fname: str):
         tgv="real",
         Th='mesh'
     )
-    return script.get_output()
 
+    ff_output = script.get_output()
 
-def evaluateMatrixAndRHS(K_total, f_bc: np.ndarray, return_indices=False):
-    """Processes system of equation for each parameter
+    def evaluateMatrixAndRHS(K_total, f_bc: np.ndarray, return_indices=False):
+        """Processes system of equation for each parameter
 
-        In FreeFem++, system K is constructed for both constrained nodes (value known from Dirichlet BC) and free nodes.
-        If k is constrained, and K is a matrix of some variational term V, then K[k, k] == tgv = 1e30
-        f_bc[k] == value defined by Dirichlet BC (in my implementation, see _problem.edp)
-        We would like to construct the system only for free nodes to decrease the dimension, so we clip K -> F[free_idx, free_idx],
-        and construct rhs [f_bc]_i = -\sum_k g_k*V(phi_i, phi_k) for all k in constrained nodes
+            In FreeFem++, system K is constructed for both constrained nodes (value known from Dirichlet BC) and free nodes.
+            If k is constrained, and K is a matrix of some variational term V, then K[k, k] == tgv = 1e30
+            f_bc[k] == value defined by Dirichlet BC (in my implementation, see _problem.edp)
+            We would like to construct the system only for free nodes to decrease the dimension, so we clip K -> F[free_idx, free_idx],
+            and construct rhs [f_bc]_i = -\sum_k g_k*V(phi_i, phi_k) for all k in constrained nodes
 
-        :param K_total: Matrix from FreeFem
-        :type K_total: `scipy.sparse.spmatrix`
-        :param K_total: vector with from FreeFem
-        :type K_total: `numpy.ndarray`
+            :param K_total: Matrix from FreeFem
+            :type K_total: `scipy.sparse.spmatrix`
+            :param K_total: vector with from FreeFem
+            :type K_total: `numpy.ndarray`
 
-        :return: A tuple (K, f)
-        :rtype: tuple
-        """
-    K_total = K_total.todense()
+            :return: A tuple (K, f)
+            :rtype: tuple
+            """
+        K_total = K_total.todense()
 
-    # Separating free and constrained nodes
-    diagK = np.diagonal(K_total)
-    free_idx = diagK < tgv
-    constrained_idx = diagK >= tgv
+        # Separating free and constrained nodes
+        diagK = np.diagonal(K_total)
+        free_idx = diagK < tgv
+        constrained_idx = diagK >= tgv
 
-    K = K_total[free_idx, :][:, free_idx]
+        K = K_total[free_idx, :][:, free_idx]
 
-    bcCoefs = K_total[constrained_idx, :][:, free_idx]
-    bcValues = f_bc[constrained_idx]
+        bcCoefs = K_total[constrained_idx, :][:, free_idx]
+        bcValues = f_bc[constrained_idx]
 
-    # This is a short version of formula
-    # [f_bc]_i = -\sum_k g_k*V(phi_i, phi_k) for all k in constrained nodes
-    rhs = -(bcValues * bcCoefs).sum(axis=0)
-    rhs = np.ravel(rhs)
-    if return_indices:
-        return K, rhs, free_idx, constrained_idx
-    else:
-        return K, rhs
+        # This is a short version of formula
+        # [f_bc]_i = -\sum_k g_k*V(phi_i, phi_k) for all k in constrained nodes
+        rhs = -(bcValues * bcCoefs).sum(axis=0)
+        rhs = np.ravel(rhs)
+        if return_indices:
+            return K, rhs, free_idx, constrained_idx
+        else:
+            return K, rhs
 
-
-def processFFOutput(ff_output: dict):
-    """Processes output of FreeFEM, returns matrices ready to be used in jax model
-        with rhs defined by Dirichlet BC
-
-        :param ff_output: result of FreeFem execution
-        :type ff_output: dict
-        """
     # TODO get rid of global variable
     tgv = ff_output["tgv"]
     f_bc = ff_output["vBC"]
