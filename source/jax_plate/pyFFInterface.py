@@ -7,7 +7,7 @@ MODULI_INDICES = ["11", "12", "16", "22", "26", "66"]
 # TODO make it local
 tgv = 1e30
 
-def load_matrices_symm(fname: str):
+def load_matrices_symm(fname: str) -> dict:
     """Processes output of FreeFEM, returns matrices ready to be used in jax model
         with rhs defined by Dirichlet BC. (Midplane-symmetrical plates)
 
@@ -147,7 +147,7 @@ def load_matrices_symm(fname: str):
     )
     interpolation_vector = interpolation_vector[free_idx]
 
-    test_point_coord = np.array([ff_output["xtest"], ff_output["ytest"]])
+    test_point_coord = np.array([ff_output["xtest"], ff_output["ytest"]]) # Probably not needed
 
     return {
         "Ks": Ks,
@@ -167,3 +167,339 @@ def load_matrices_symm(fname: str):
         "mesh": ff_output['Th'],
         "boundary_value": f_bc
     }
+
+def load_matrices_unsymm(fname: str):
+    with open(fname, "r") as ifile:
+        _script = ifile.read()
+
+    script = pyff.edpScript(_script)
+
+    script += """
+    real tgv = -1.0;
+    func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - offsetAccelY)^2));
+
+    fespace Lh(Th, P1);
+    Lh u, v, r, s;
+
+    fespace Mh(Th, P2Morley);
+    Mh [w, wx, wy], [t, tx, ty];
+
+    // Boundary condition u = funcBc on Dirichlet border
+    func funcBC = 1.0;
+
+    varf BCL(u, r) = on(1, u=0);
+    varf BCM([w, wx, wy], [t, tx, ty]) = on(1, w=funcBC, wx=0, wy=0);
+
+    varf vmarkLh(u, r) = on(1, u = 1);
+    real[int] vmarkerLh = vmarkLh(0, Lh, tgv = -1);
+
+    varf vmarkMh([w, wx, wy], [t, tx, ty]) = on(1, w=100, wx=200, wy=300);
+    real[int] vmarkerMh = vmarkMh(0, Mh, tgv = -1);
+
+    real[int] vBCLh = BCL(0, Lh, tgv=-1);
+    real[int] vBCMh = BCM(0, Mh, tgv=-1);
+
+    //complex[int] vBC0 = concatenate(vBCL, vBCL);
+    //complex[int] vBC = concatenate(vBC0, vBCM);
+
+    border CAccin(t=0., 2*pi){x=offsetAccelX + 0.3*rAccel*cos(t); y=offsetAccelY + 0.3*rAccel*sin(t); label=3;}
+    int[int] u2vc = [0];
+    mesh accTh = buildmesh(CAccin(64)); // Cubature formula would be better! Disc: https://doi.org/10.1007/s002110050358 ---------------------------------------------
+    fespace midVh(accTh, P1); // More intermediate interpolation steps?----------------------------------------------------------
+
+    matrix Minterp = interpolate(midVh, Mh, U2Vc=u2vc);
+    """
+
+    # WARNING: all parts of the Dirichlet BC should be labelled 1
+    # ensure it in _problem.edp
+    script += pyff.VarfScript(
+        Sxx='int2d(Th)(dx(u)*dx(r)) + on(1, u=0)',
+        Sxy='int2d(Th)(dx(r)*dy(u)) + on(1, u=0)',
+        Syx='int2d(Th)(dx(u)*dy(r)) + on(1, u=0)',
+        Syy='int2d(Th)(dy(u)*dy(r)) + on(1, u=0)',
+        SxxL='int2d(Th)(dx(u)*dx(r))', # Index L is for K12
+        SxyL='int2d(Th)(dx(r)*dy(u))',
+        SyxL='int2d(Th)(dx(u)*dy(r))',
+        SyyL='int2d(Th)(dy(u)*dy(r))',
+        M11='int2d(Th)(u*r) + on(1, u=0)',
+        M11Correction='int2d(Th)(indAccel*u*r) + on(1, u=0)',
+        functions=['u', 'r'],
+        fespaces=['Lh', 'Lh']
+    )
+
+    script += pyff.VarfScript(
+        Rxxx='int2d(Th)(dx(r)*dxx(w))',
+        Rxyy='int2d(Th)(dx(r)*dyy(w))',
+        Rxxy='int2d(Th)(dx(r)*dxy(w))',
+        Ryxx='int2d(Th)(dy(r)*dxx(w))',
+        Ryyy='int2d(Th)(dy(r)*dyy(w))',
+        Ryxy='int2d(Th)(dy(r)*dxy(w))',
+        functions=['w', 'r'],
+        fespaces=['Mh', 'Lh']
+    )
+
+    script += pyff.VarfScript(
+        Txxxx='int2d(Th)(dxx(w)*dxx(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        Txxyy='int2d(Th)(dxx(w)*dyy(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        Tyyxx='int2d(Th)(dyy(w)*dxx(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        Txxxy='int2d(Th)(dxx(w)*dxy(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        Txyxx='int2d(Th)(dxy(w)*dxx(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        Txyyy='int2d(Th)(dxy(w)*dyy(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        Tyyxy='int2d(Th)(dyy(w)*dxy(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        Txyxy='int2d(Th)(dxy(w)*dxy(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        Tyyyy='int2d(Th)(dyy(w)*dyy(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        M33='int2d(Th)(w*t) + on(1, w=funcBC, wx=0, wy=0)',
+        M33Correction='int2d(Th)(indAccel*w*t) + on(1, w=funcBC, wx=0, wy=0)',
+        M33I2='int2d(Th)(dx(w)*dx(t) + dy(w)*dy(t)) + on(1, w=funcBC, wx=0, wy=0)',
+        M33I2Correction='int2d(Th)(indAccel*(dx(w)*dx(t) + dy(w)*dy(t))) + on(1, w=funcBC, wx=0, wy=0)',
+        functions=['[w, wx, wy]', '[t, tx, ty]'],
+        fespaces=['Mh', 'Mh']
+    )
+
+    # WARNING: keyword 'array' only works with my upgraded pyFreeFem version from the forked repo in my GitHub
+    script += pyff.OutputScript(
+        vBCLh="array",
+        vBCMh="array",
+        vmarkerLh="array",
+        vmarkerMh="array",
+        interp="matrix",
+        xtest="real",
+        ytest="real",
+        tgv="real",
+        Th='mesh'
+    )
+
+    # script.pprint()
+    # print(script)
+
+    ff_output = script.get_output()
+    # [print(k, type(ff_output[k])) for k in ff_output]
+
+    Sxx = ff_output['Sxx'].tocoo()
+    Sxy = ff_output['Sxy'].tocoo()
+    Syx = ff_output['Syx'].tocoo()
+    Syy = ff_output['Syy'].tocoo()
+
+    SxxL = ff_output['SxxL'].tocoo()
+    SxyL = ff_output['SxyL'].tocoo()
+    SyxL = ff_output['SyxL'].tocoo()
+    SyyL = ff_output['SyyL'].tocoo()
+
+    M11 = ff_output['M11']
+    M11Correction = ff_output['M11Correction']
+
+    Rxxx = ff_output['Rxxx'].tocoo()
+    Rxyy = ff_output['Rxyy'].tocoo()
+    Rxxy = ff_output['Rxxy'].tocoo()
+    Ryxx = ff_output['Ryxx'].tocoo()
+    Ryyy = ff_output['Ryyy'].tocoo()
+    Ryxy = ff_output['Ryxy'].tocoo()
+
+    Txxxx = ff_output['Txxxx'].tocoo()
+    Txxyy = ff_output['Txxyy'].tocoo()
+    Tyyxx = ff_output['Tyyxx'].tocoo()
+    Txxxy = ff_output['Txxxy'].tocoo()
+    Txyxx = ff_output['Txyxx'].tocoo()
+    Txyyy = ff_output['Txyyy'].tocoo()
+    Tyyxy = ff_output['Tyyxy'].tocoo()
+    Txyxy = ff_output['Txyxy'].tocoo()
+    Tyyyy = ff_output['Tyyyy'].tocoo()
+
+    M33 = ff_output['M33']
+    M33Correction = ff_output['M33Correction']
+
+    M33I2 = ff_output['M33I2']
+    M33I2Correction = ff_output['M33I2Correction']
+
+    interp_mat = ff_output['interp'].todense()
+
+    vBCLh = ff_output['vBCLh']
+    vBCMh = ff_output['vBCMh']
+
+    Lh_size = vBCLh.size
+    Mh_size = vBCMh.size
+
+    all_size = 2*Lh_size + Mh_size
+
+    print(Lh_size, Mh_size)
+
+    ns = (all_size, all_size) # new shape -> ns
+
+    marker_Lh = ff_output['vmarkerLh']
+    marker_Mh = ff_output['vmarkerMh']
+
+    dLh_idx = np.nonzero(marker_Lh)[0] # Dirichlet BC indices for Lh
+    dMh_idx = np.nonzero(marker_Mh)[0] # Dirichlet BC indices for Mh
+
+    def resize(mat):
+        m = mat.copy().tocoo()
+        m.resize(ns)
+        return m
+
+    def move(mat, ncol, nrow):
+        mat.col += ncol * Lh_size
+        mat.row += nrow * Lh_size
+
+    def rmrows_lh(mat, order):
+        if not 0 < order < 3:
+            raise ValueError
+        rows = dLh_idx + (order - 1) * Lh_size
+        rows = rows[:, np.newaxis]
+        mask_arr = np.equal(rows, mat.row).sum(axis=0, dtype=bool)
+        mat.data[mask_arr] = 0
+
+    def rmrows_mh(mat):
+        rows = dMh_idx + 2 * Lh_size
+        rows = rows[:, np.newaxis]
+        mask_arr = np.equal(rows, mat.row).sum(axis=0, dtype=bool)
+        mat.data[mask_arr] = 0
+
+    def transp(mat):
+        return (mat + mat.transpose(copy=True)).tocoo()
+
+
+    KA11 = resize(Sxx)
+
+    KA22 = resize(Syy)
+    move(KA22, 1, 1)
+
+    KA12 = resize(SxyL)
+    move(KA12, 1, 0)
+    # KA12 = KA12 + KA12.transpose(copy=True)
+    KA12 = transp(KA12)
+    rmrows_lh(KA12, 1)
+    rmrows_lh(KA12, 2)
+
+    KA16K11 = resize(Sxy + Syx)
+    KA16K12 = resize(SxxL)
+    move(KA16K12, 1, 0)
+    KA16K12 = transp(KA16K12)
+    rmrows_lh(KA16K12, 1)
+    rmrows_lh(KA16K12, 2)
+    KA16 = KA16K11 + KA16K12
+
+    KA26K22 = resize(Sxy + Syx)
+    move(KA26K22, 1, 1)
+    KA26K12 = resize(SyyL)
+    move(KA26K12, 1, 0)
+    KA26K12 = transp(KA26K12)
+    rmrows_lh(KA26K12, 1)
+    rmrows_lh(KA26K12, 2)
+    KA26 = KA26K12 + KA26K22
+
+    KA66K11 = resize(Syy)
+    KA66K22 = resize(Sxx)
+    move(KA66K22, 1, 1)
+    KA66K12 = resize(SyxL)
+    move(KA66K12, 1, 0)
+    KA66K12 = transp(KA66K12)
+    rmrows_lh(KA66K12, 1)
+    rmrows_lh(KA66K12, 2)
+    KA66 = KA66K11 + KA66K12 + KA66K22
+
+
+    KB11 = resize(-Rxxx)
+    move(KB11, 2, 0)
+    KB11 = transp(KB11)
+    rmrows_lh(KB11, 1)
+    rmrows_mh(KB11)
+
+    KB22 = resize(-Ryyy)
+    move(KB22, 2, 1)
+    KB22 = transp(KB22)
+    rmrows_lh(KB22, 2)
+    rmrows_mh(KB22)
+
+    KB12K13 = resize(-Rxyy)
+    move(KB12K13, 2, 0)
+    KB12K13 = transp(KB12K13)
+    rmrows_lh(KB12K13, 1)
+    rmrows_mh(KB12K13)
+    KB12K23 = resize(-Ryxx)
+    move(KB12K23, 2, 1)
+    KB12K23 = transp(KB12K23)
+    rmrows_lh(KB12K23, 2)
+    rmrows_mh(KB12K23)
+    KB12 = KB12K13 + KB12K23
+
+    KB16K13 = resize(-Ryxx)
+    move(KB16K13, 2, 0)
+    KB16K13 = transp(KB16K13)
+    rmrows_lh(KB16K13, 1)
+    rmrows_mh(KB16K13)
+    KB16K23 = resize(-Rxxx)
+    move(KB16K23, 2, 1)
+    KB16K23 = transp(KB16K23)
+    rmrows_lh(KB16K23, 2)
+    rmrows_mh(KB16K23)
+    KB16 = KB16K13 + KB16K23
+
+    KB26K13 = resize(-2*Rxxy - Ryyy)
+    move(KB26K13, 2, 0)
+    KB26K13 = transp(KB26K13)
+    rmrows_lh(KB26K13, 1)
+    rmrows_mh(KB26K13)
+    KB26K23 = resize(-Rxyy - 2*Ryxy)
+    move(KB26K23, 2, 1)
+    KB26K23 = transp(KB26K23)
+    rmrows_lh(KB26K23, 2)
+    rmrows_mh(KB26K23)
+    KB26 = KB26K13 + KB26K23
+
+    KB66K13 = resize(-2*Ryxy)
+    move(KB66K13, 2, 0)
+    KB66K13 = transp(KB66K13)
+    rmrows_lh(KB66K13, 1)
+    rmrows_mh(KB66K13)
+    KB66K23 = resize(-2*Rxxy)
+    move(KB66K23, 2, 1)
+    KB66K23 = transp(KB66K23)
+    rmrows_lh(KB66K23, 2)
+    rmrows_mh(KB66K23)
+    KB66 = KB66K13 + KB66K23
+
+
+    KD11 = resize(Txxxx)
+    move(KD11, 2, 2)
+
+    KD12 = resize(Txxyy + Tyyxx)
+    move(KD12, 2, 2)
+
+    KD16 = resize(2*(Txxxy + Txyxx))
+    move(KD16, 2, 2)
+
+    KD26 = resize(2*(Txyyy + Tyyxy))
+    move(KD26, 2, 2)
+
+    KD66 = resize(4*Txyxy)
+    move(KD66, 2, 2)
+
+    KD22 = resize(Tyyyy)
+    move(KD22, 2, 2)
+
+
+    KM11 = resize(M11)
+    KM11Corr = resize(M11Correction)
+
+    KM22 = resize(M11)
+    move(KM22, 1, 1)
+    KM22Corr = resize(M11Correction)
+    move(KM22Corr, 1, 1)
+
+    KM33 = resize(M33)
+    move(KM33, 2, 2)
+    KM33Corr = resize(M33Correction)
+    move(KM33Corr, 2, 2)
+    KM33I2 = resize(M33I2)
+    move(KM33I2, 2, 2)
+    KM33I2Corr = resize(M33I2Correction)
+    move(KM33I2Corr, 2, 2)
+
+    rhs_vec = np.zeros(ns[0], dtype=np.float64)
+    rhs_vec[2*Lh_size:] = vBCMh
+
+    return ((KA11, KA12, KA16, KA22, KA26, KA66,
+            KB11, KB12, KB16, KB22, KB26, KB66,
+            KD11, KD12, KD16, KD22, KD26, KD66,
+            KM11, KM11Corr, KM22, KM22Corr, KM33, KM33Corr, KM33I2, KM33I2Corr),
+            rhs_vec, interp_mat, Lh_size, Mh_size)

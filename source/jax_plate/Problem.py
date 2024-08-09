@@ -17,7 +17,7 @@ from jax_plate.Accelerometer import Accelerometer, AccelerometerParams
 from jax_plate.Material import Material, get_material
 from jax_plate.Geometry import Geometry, GeometryParams
 from jax_plate.Input import Compressor
-from jax_plate.pyFFInterface import load_matrices_symm
+from jax_plate.pyFFInterface import load_matrices_symm, load_matrices_unsymm
 from jax_plate.Utils import get_source_dir
 from jax_plate.Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 from jax_plate.Optimizers import optResult
@@ -225,72 +225,92 @@ class Problem:
         self.e = self.geometry.height / 2.0
         self.rho = self.material.density
 
-        processed_ff_output = load_matrices_symm(self.geometry.current_file)
+        if self.material.is_mps:
+            processed_ff_output = load_matrices_symm(self.geometry.current_file)
 
-        m_names = ['M', 'L', "MCorrection", "LCorrection"]
-        matrices = []
+            m_names = ['M', 'L', "MCorrection", "LCorrection"]
+            matrices = []
 
-        for name in m_names:
-            matrices.append(processed_ff_output[name])
+            for name in m_names:
+                matrices.append(processed_ff_output[name])
 
-        _mats = np.array(matrices) # TODO: check if we can avoid copying here
+            _mats = np.array(matrices) # TODO: check if we can avoid copying here
 
-        _Ks = np.array(processed_ff_output['Ks'], dtype=np.float64)
+            _Ks = np.array(processed_ff_output['Ks'], dtype=np.float64)
 
-        nz_mask = (np.sum(np.abs(_Ks), axis=0) + np.sum(np.abs(_mats), axis=0)).nonzero()
-        nz_mask, self.solver_num = create_symbolic(_Ks.shape[1],
-                                                   np.array(nz_mask, dtype=np.int32).T,
-                                                   np.complex128)
+            nz_mask = (np.sum(np.abs(_Ks), axis=0) + np.sum(np.abs(_mats), axis=0)).nonzero()
+            nz_mask, self.solver_num = create_symbolic(_Ks.shape[1],
+                                                       np.array(nz_mask, dtype=np.int32).T,
+                                                       np.complex128)
 
-        self.M = _mats[0][nz_mask]
-        self.L = _mats[1][nz_mask]
-        MCorrection = _mats[2][nz_mask]
-        LCorrection = _mats[3][nz_mask]
-        self.Ks = np.zeros((6, self.M.size))
+            self.M = _mats[0][nz_mask]
+            self.L = _mats[1][nz_mask]
+            MCorrection = _mats[2][nz_mask]
+            LCorrection = _mats[3][nz_mask]
+            self.Ks = np.zeros((6, self.M.size))
 
-        for i in range(0, 6):
-            self.Ks[i] = _Ks[i][nz_mask]
+            for i in range(0, 6):
+                self.Ks[i] = _Ks[i][nz_mask]
 
-        v_names = ['fKs', 'fM', 'fL']
-        for name in v_names:
-            setattr(self, name, np.array(processed_ff_output[name],
-                                         dtype=np.float64).view(StaticNdArrayWrapper))
+            v_names = ['fKs', 'fM', 'fL']
+            for name in v_names:
+                setattr(self, name, np.array(processed_ff_output[name],
+                                             dtype=np.float64).view(StaticNdArrayWrapper))
 
-        fMCorrection = np.array(processed_ff_output["fMCorrection"], dtype=np.float64)
-        fLCorrection = np.array(processed_ff_output["fLCorrection"], dtype=np.float64)
+            fMCorrection = np.array(processed_ff_output["fMCorrection"], dtype=np.float64)
+            fLCorrection = np.array(processed_ff_output["fLCorrection"], dtype=np.float64)
 
-        # TODO load can be not in phase with the BC vibration
-        # and both BC and load may have different phases in points
-        # so both of them have to be complex in general
-        # but it is too comlicated as for now
+            # TODO load can be not in phase with the BC vibration
+            # and both BC and load may have different phases in points
+            # so both of them have to be complex in general
+            # but it is too comlicated as for now
 
-        # Total (regular + rotational) inertia
-        self.MInertia = self.rho * (self.M + 1.0 / 3.0 * self.e ** 2 * self.L)
-        # BC term
-        self.fInertia = self.rho * (self.fM + 1.0 / 3.0 * self.e ** 2 * self.fL)
+            # Total (regular + rotational) inertia
+            self.MInertia = self.rho * (self.M + 1.0 / 3.0 * self.e ** 2 * self.L)
+            # BC term
+            self.fInertia = self.rho * (self.fM + 1.0 / 3.0 * self.e ** 2 * self.fL)
 
-        if self.accelerometer is not None:
-            # TODO: check e vs 2e=h
-            rho_corr = (
+            if self.accelerometer is not None:
+                # TODO: check e vs 2e=h
+                rho_corr = (
+                    self.accelerometer.mass
+                    / (np.pi * self.accelerometer.radius ** 2)
+                    / self.e
+                )
+                self.MInertia += rho_corr * (
+                    MCorrection + 1.0 / 3.0 * self.e ** 2 * LCorrection
+                )
+                self.fInertia += rho_corr * (
+                    fMCorrection + 1.0 / 3.0 * self.e ** 2 * fLCorrection
+                )
+
+            self.interpolation_vector = np.array(processed_ff_output["interpolation_vector"],
+                                                 dtype=np.float64)
+            self.interpolation_value_from_bc = np.float64(processed_ff_output["interpolation_value_from_bc"])
+
+            self.test_point = processed_ff_output["test_point_coord"]
+            self.constrained_idx = processed_ff_output["constrained_idx"]
+            self.mesh = processed_ff_output['mesh']
+            self.boundary_value = processed_ff_output['boundary_value']
+
+        else: # Not symmetric case
+            processed_ff_output = load_matrices_unsymm(self.geometry.current_file)
+            self.mats = processed_ff_output[0]
+            self.vec = processed_ff_output[1]
+            self.interp_mat = processed_ff_output[2]
+            self.Lh_size = processed_ff_output[3]
+            self.Mh_size = processed_ff_output[4]
+            self.rho_corr = (
                 self.accelerometer.mass
                 / (np.pi * self.accelerometer.radius ** 2)
                 / self.e
             )
-            self.MInertia += rho_corr * (
-                MCorrection + 1.0 / 3.0 * self.e ** 2 * LCorrection
-            )
-            self.fInertia += rho_corr * (
-                fMCorrection + 1.0 / 3.0 * self.e ** 2 * fLCorrection
-            )
-
-        self.interpolation_vector = np.array(processed_ff_output["interpolation_vector"],
-                                             dtype=np.float64)
-        self.interpolation_value_from_bc = np.float64(processed_ff_output["interpolation_value_from_bc"])
-
-        self.test_point = processed_ff_output["test_point_coord"]
-        self.constrained_idx = processed_ff_output["constrained_idx"]
-        self.mesh = processed_ff_output['mesh']
-        self.boundary_value = processed_ff_output['boundary_value']
+            # self.rho_corr = 0.0
+            self.h = self.geometry.height
+            self.I0 = self.h * self.rho
+            self.I0Corr = self.h*self.rho_corr
+            self.I2 = self.rho * self.h**3 / 12
+            self.I2Corr = self.rho_corr * self.h**3 / 12
 
 
     @functools.cache
@@ -306,49 +326,92 @@ class Problem:
             test point.
 
         """
-        def _solve(f, params, Ks, fKs, MInertia, fInertia,
-                   interpolation_vector, interpolation_value_from_bc,
-                   transform, solv_num, cpu):
-            # solve for one frequency f (in [Hz])
-            omega = 2.0 * np.pi * f
+        if self.material.is_mps:
+            def _solve(f, params, Ks, fKs, MInertia, fInertia,
+                       interpolation_vector, interpolation_value_from_bc,
+                       transform, solv_num, cpu):
+                # solve for one frequency f (in [Hz])
+                omega = 2.0 * np.pi * f
 
-            # transform is a function D_ij = D_ij(theta, omega)
-            # theta is the set of parameters; see Materials.ATYPES
-            D = transform(params, omega)
+                # transform is a function D_ij = D_ij(theta, omega)
+                # theta is the set of parameters; see Materials.ATYPES
+                D = transform(params, omega)
 
-            # Ks are matrices from eq (4.1.7)
-            K = jnp.einsum(Ks, [0, ...], D, [0])
+                # Ks are matrices from eq (4.1.7)
+                K = jnp.einsum(Ks, [0, ...], D, [0])
 
-            # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
-            fK = jnp.einsum(fKs, [0, ...], D, [0])
+                # fs are vectors from (4.1.11), they account for the Clamped BC (u = du/dn = 0)
+                fK = jnp.einsum(fKs, [0, ...], D, [0])
 
-            # MInertia == rho*(M + 1/3 e^2 L)
-            A = -(omega ** 2) * MInertia + K
-            b = -(omega ** 2) * fInertia + fK
+                # MInertia == rho*(M + 1/3 e^2 L)
+                A = -(omega ** 2) * MInertia + K
+                b = -(omega ** 2) * fInertia + fK
 
-            u = spsolve(A, b, solver_num=solv_num, n_cpu=cpu)
+                u = spsolve(A, b, solver_num=solv_num, n_cpu=cpu)
 
-            # interpolation_vector == c
-            # interpolation_value_from_bc == c_0 from 4.1.18
-            u_in_test_point = interpolation_value_from_bc + interpolation_vector @ u
+                # interpolation_vector == c
+                # interpolation_value_from_bc == c_0 from 4.1.18
+                u_in_test_point = interpolation_value_from_bc + interpolation_vector @ u
 
-            return u_in_test_point
+                return u_in_test_point
 
 
-        _solve_p = jax.tree_util.Partial(_solve,
-                                         Ks=self.Ks / 2.0 / self.e,
-                                         fKs=self.fKs / 2.0 / self.e,
-                                         MInertia=self.MInertia,
-                                         fInertia=self.fInertia,
-                                         interpolation_vector=self.interpolation_vector,
-                                         interpolation_value_from_bc=self.interpolation_value_from_bc,
-                                         transform=self.material.get_transform(self.geometry.height),
-                                         solv_num=self.solver_num,
-                                         cpu=self.n_cpu)
+            _solve_p = jax.tree_util.Partial(_solve,
+                                             Ks=self.Ks / 2.0 / self.e,
+                                             fKs=self.fKs / 2.0 / self.e,
+                                             MInertia=self.MInertia,
+                                             fInertia=self.fInertia,
+                                             interpolation_vector=self.interpolation_vector,
+                                             interpolation_value_from_bc=self.interpolation_value_from_bc,
+                                             transform=self.material.get_transform(self.geometry.height),
+                                             solv_num=self.solver_num,
+                                             cpu=self.n_cpu)
 
-        _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
+            _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
 
-        return _get_afc
+            return _get_afc
+
+        else: # Non symmetrical case
+            transform=self.material.get_transform(self.geometry.height)
+            from scipy.sparse.linalg import spsolve
+            def _solve(f, params): # TODO:  DECIDE IF u AND v COMPONENTS AFFECT AFC
+                omega = 2 * np.pi * f
+                A, B, D = transform(params, omega)
+                A = np.array(A)
+                B = np.array(B)
+                D = np.array(D)
+
+                m = self.mats
+                mat = -omega**2 * (self.I0 * m[18] + self.I0Corr * m[19] +
+                                   self.I0 * m[20] + self.I0Corr * m[21] +
+                                   self.I0 * m[22] + self.I0Corr * m[23] +
+                                   self.I2 * m[24] + self.I2Corr * m[25])
+                for i in range(6):
+                    mat += A[i] * m[i] + B[i] * m[i + 6] + D[i] * m[i + 12]
+
+                rhs = self.vec * (D[0] + 2*D[1] + 4*D[2] +
+                                  4*D[4] + 4*D[5] + D[3] - omega**2 *
+                                  (self.I0 + self.I0Corr + self.I2 + self.I2Corr))
+
+                sol = spsolve(mat, rhs)
+                acc_sol = self.interp_mat @ sol[2*self.Lh_size:]
+
+                res = np.abs(np.mean(acc_sol)) # TODO: DECIDE HOW MEAN IS CALCULATED
+                # res = np.mean(np.abs(acc_sol))
+
+                return res
+
+            def _get_afc(f, params):
+                if isinstance(f, np.ndarray):
+                    res = np.zeros(f.size, dtype=np.complex128)
+                    for i in range(f.size):
+                        res[i] = _solve(f[i], params)
+                        print(f'Progress: {i/f.size:.2f}')
+                    return res
+                else:
+                    return _solve(f, params)
+
+            return _get_afc
 
 
     def getModePicture(self, freq: int | float,
