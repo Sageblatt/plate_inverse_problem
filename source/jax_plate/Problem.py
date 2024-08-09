@@ -311,31 +311,15 @@ class Problem:
             self.sparsity = sparsity_pattern.size/self.mat_size**2
             self.rows = sparsity_pattern % self.mat_size
             self.cols = sparsity_pattern // self.mat_size
-            # print(np.all(sparsity_pattern[:-1] <= sparsity_pattern[1:]))
-
-            # print(self.rows, self.cols, sparsity_pattern.dtype)
-            # print(np.sum((self.rows + self.cols*self.mat_size) == sparsity_pattern), sparsity_pattern.size)
-
-            empty_data = np.zeros(self.rows.size, dtype=np.float64)
-            empty_mat = coo_matrix((empty_data, (self.rows, self.cols)),
-                                   shape=(self.mat_size, self.mat_size))
 
             for i in range(len(self.mats)):
                 idx = unwind(self.mats[i])
                 idx_perm = np.argsort(idx)
                 mask = np.isin(sparsity_pattern, idx[idx_perm], assume_unique=True)
-                # new_mat = empty_mat.copy()
-                # new_mat.data[mask] = self.mats[i].data
-                # self.mats[i] = new_mat.data
+
                 data = np.zeros(self.rows.size, dtype=np.float64)
                 data[mask] = self.mats[i].data[idx_perm]
-                new_mat = coo_matrix((data, (self.rows, self.cols)),
-                                     shape=(self.mat_size, self.mat_size))
-                print(np.array_equal(self.mats[i].todense(), new_mat.todense()),
-                      np.all(idx[:-1] <= idx[1:]))
-                self.mats[i] = new_mat.data
-                self.rows = new_mat.row
-                self.cols = new_mat.col
+                self.mats[i] = data
 
             self.vec = processed_ff_output[1]
             self.interp_mat = processed_ff_output[2]
@@ -347,7 +331,6 @@ class Problem:
                 / (np.pi * self.accelerometer.radius ** 2)
                 / self.e
             )
-            # self.rho_corr = 0.0
             self.h = self.geometry.height
             self.I0 = self.h * self.rho
             self.I0Corr = self.h*self.rho_corr

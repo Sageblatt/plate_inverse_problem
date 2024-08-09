@@ -271,11 +271,7 @@ def load_matrices_unsymm(fname: str):
         Th='mesh'
     )
 
-    # script.pprint()
-    # print(script)
-
     ff_output = script.get_output()
-    # [print(k, type(ff_output[k])) for k in ff_output]
 
     Sxx = ff_output['Sxx'].tocoo()
     Sxy = ff_output['Sxy'].tocoo()
@@ -324,8 +320,6 @@ def load_matrices_unsymm(fname: str):
 
     all_size = 2*Lh_size + Mh_size
 
-    print(Lh_size, Mh_size)
-
     ns = (all_size, all_size) # new shape -> ns
 
     marker_Lh = ff_output['vmarkerLh']
@@ -368,7 +362,6 @@ def load_matrices_unsymm(fname: str):
 
     KA12 = resize(SxyL)
     move(KA12, 1, 0)
-    # KA12 = KA12 + KA12.transpose(copy=True)
     KA12 = transp(KA12)
     rmrows_lh(KA12, 1)
     rmrows_lh(KA12, 2)
