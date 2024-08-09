@@ -501,8 +501,8 @@ def load_matrices_unsymm(fname: str):
     rhs_vec = np.zeros(ns[0], dtype=np.float64)
     rhs_vec[2*Lh_size:] = vBCMh
 
-    return ((KA11, KA12, KA16, KA22, KA26, KA66,
+    return ([KA11, KA12, KA16, KA22, KA26, KA66,
             KB11, KB12, KB16, KB22, KB26, KB66,
             KD11, KD12, KD16, KD22, KD26, KD66,
-            KM11, KM11Corr, KM22, KM22Corr, KM33, KM33Corr, KM33I2, KM33I2Corr),
+            KM11, KM11Corr, KM22, KM22Corr, KM33, KM33Corr, KM33I2, KM33I2Corr],
             rhs_vec, interp_mat, interp_mat_Lh, Lh_size, Mh_size)

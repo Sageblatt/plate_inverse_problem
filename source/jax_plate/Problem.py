@@ -12,6 +12,7 @@ import numpy as np
 import numpy.typing as npt
 import pyFreeFem as pyff
 from scipy.optimize import differential_evolution
+from scipy.sparse import coo_matrix
 
 from jax_plate.Accelerometer import Accelerometer, AccelerometerParams
 from jax_plate.Material import Material, get_material
@@ -296,6 +297,46 @@ class Problem:
         else: # Not symmetric case
             processed_ff_output = load_matrices_unsymm(self.geometry.current_file)
             self.mats = processed_ff_output[0]
+
+            self.mat_size = self.mats[0].shape[0]
+
+            def unwind(mat):
+                return mat.row + self.mat_size * mat.col
+
+            sparsity_pattern = np.array([], dtype=self.mats[0].row.dtype)
+            for i in range(len(self.mats)):
+                self.mats[i] = self.mats[i].tocoo()
+                sparsity_pattern = np.union1d(sparsity_pattern, unwind(self.mats[i]))
+
+            self.sparsity = sparsity_pattern.size/self.mat_size**2
+            self.rows = sparsity_pattern % self.mat_size
+            self.cols = sparsity_pattern // self.mat_size
+            # print(np.all(sparsity_pattern[:-1] <= sparsity_pattern[1:]))
+
+            # print(self.rows, self.cols, sparsity_pattern.dtype)
+            # print(np.sum((self.rows + self.cols*self.mat_size) == sparsity_pattern), sparsity_pattern.size)
+
+            empty_data = np.zeros(self.rows.size, dtype=np.float64)
+            empty_mat = coo_matrix((empty_data, (self.rows, self.cols)),
+                                   shape=(self.mat_size, self.mat_size))
+
+            for i in range(len(self.mats)):
+                idx = unwind(self.mats[i])
+                idx_perm = np.argsort(idx)
+                mask = np.isin(sparsity_pattern, idx[idx_perm], assume_unique=True)
+                # new_mat = empty_mat.copy()
+                # new_mat.data[mask] = self.mats[i].data
+                # self.mats[i] = new_mat.data
+                data = np.zeros(self.rows.size, dtype=np.float64)
+                data[mask] = self.mats[i].data[idx_perm]
+                new_mat = coo_matrix((data, (self.rows, self.cols)),
+                                     shape=(self.mat_size, self.mat_size))
+                print(np.array_equal(self.mats[i].todense(), new_mat.todense()),
+                      np.all(idx[:-1] <= idx[1:]))
+                self.mats[i] = new_mat.data
+                self.rows = new_mat.row
+                self.cols = new_mat.col
+
             self.vec = processed_ff_output[1]
             self.interp_mat = processed_ff_output[2]
             self.interp_mat_Lh = processed_ff_output[3]
@@ -383,16 +424,20 @@ class Problem:
                 D = np.array(D)
 
                 m = self.mats
-                mat = -omega**2 * (self.I0 * m[18] + self.I0Corr * m[19] +
-                                   self.I0 * m[20] + self.I0Corr * m[21] +
-                                   self.I0 * m[22] + self.I0Corr * m[23] +
-                                   self.I2 * m[24] + self.I2Corr * m[25])
+                mat = np.zeros_like(m[0], dtype=np.complex128)
+                mat += -omega**2 * (self.I0 * m[18] + self.I0Corr * m[19] +
+                                    self.I0 * m[20] + self.I0Corr * m[21] +
+                                    self.I0 * m[22] + self.I0Corr * m[23] +
+                                    self.I2 * m[24] + self.I2Corr * m[25])
                 for i in range(6):
                     mat += A[i] * m[i] + B[i] * m[i + 6] + D[i] * m[i + 12]
 
                 rhs = self.vec * (D[0] + 2*D[1] + 4*D[2] +
                                   4*D[4] + 4*D[5] + D[3] - omega**2 *
                                   (self.I0 + self.I0Corr + self.I2 + self.I2Corr))
+
+                mat = coo_matrix((mat, (self.rows, self.cols)),
+                                 shape=(self.mat_size, self.mat_size))
 
                 sol = spsolve(mat, rhs)
 
