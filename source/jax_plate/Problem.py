@@ -298,8 +298,9 @@ class Problem:
             self.mats = processed_ff_output[0]
             self.vec = processed_ff_output[1]
             self.interp_mat = processed_ff_output[2]
-            self.Lh_size = processed_ff_output[3]
-            self.Mh_size = processed_ff_output[4]
+            self.interp_mat_Lh = processed_ff_output[3]
+            self.Lh_size = processed_ff_output[4]
+            self.Mh_size = processed_ff_output[5]
             self.rho_corr = (
                 self.accelerometer.mass
                 / (np.pi * self.accelerometer.radius ** 2)
@@ -394,9 +395,28 @@ class Problem:
                                   (self.I0 + self.I0Corr + self.I2 + self.I2Corr))
 
                 sol = spsolve(mat, rhs)
-                acc_sol = self.interp_mat @ sol[2*self.Lh_size:]
 
-                res = np.abs(np.mean(acc_sol)) # TODO: DECIDE HOW MEAN IS CALCULATED
+                u_sol = self.interp_mat_Lh @ sol[:self.Lh_size]
+                v_sol = self.interp_mat_Lh @ sol[self.Lh_size:2*self.Lh_size]
+                w_sol = self.interp_mat @ sol[2*self.Lh_size:]
+
+                u = np.mean(u_sol)
+                v = np.mean(v_sol)
+                w = np.mean(w_sol)
+
+                uang = np.angle(u)
+                vang = np.angle(v)
+                wang = np.angle(w)
+
+                uang_delta = uang - wang
+                vang_delta = vang - wang
+
+                u_abs = np.abs(u) * np.cos(uang_delta)
+                v_abs = np.abs(v) * np.cos(vang_delta)
+                w_abs = np.abs(w)
+
+                res = np.sqrt(u_abs**2 + v_abs**2 + w_abs**2)
+                # res = w_abs # TODO: DECIDE HOW MEAN IS CALCULATED
                 # res = np.mean(np.abs(acc_sol))
 
                 return res

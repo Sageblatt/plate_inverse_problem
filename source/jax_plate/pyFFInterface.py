@@ -208,6 +208,7 @@ def load_matrices_unsymm(fname: str):
     fespace midVh(accTh, P1); // More intermediate interpolation steps?----------------------------------------------------------
 
     matrix Minterp = interpolate(midVh, Mh, U2Vc=u2vc);
+    matrix MinterpL = interpolate(midVh, Lh, U2Vc=u2vc);
     """
 
     # WARNING: all parts of the Dirichlet BC should be labelled 1
@@ -263,6 +264,7 @@ def load_matrices_unsymm(fname: str):
         vmarkerLh="array",
         vmarkerMh="array",
         interp="matrix",
+        interpL="matrix",
         xtest="real",
         ytest="real",
         tgv="real",
@@ -312,6 +314,7 @@ def load_matrices_unsymm(fname: str):
     M33I2Correction = ff_output['M33I2Correction']
 
     interp_mat = ff_output['interp'].todense()
+    interp_mat_Lh = ff_output['interpL'].todense()
 
     vBCLh = ff_output['vBCLh']
     vBCMh = ff_output['vBCMh']
@@ -502,4 +505,4 @@ def load_matrices_unsymm(fname: str):
             KB11, KB12, KB16, KB22, KB26, KB66,
             KD11, KD12, KD16, KD22, KD26, KD66,
             KM11, KM11Corr, KM22, KM22Corr, KM33, KM33Corr, KM33I2, KM33I2Corr),
-            rhs_vec, interp_mat, Lh_size, Mh_size)
+            rhs_vec, interp_mat, interp_mat_Lh, Lh_size, Mh_size)
