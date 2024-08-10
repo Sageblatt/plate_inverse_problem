@@ -271,7 +271,7 @@ def load_matrices_unsymm(fname: str):
         Th='mesh'
     )
 
-    ff_output = script.get_output()
+    ff_output = script.get_output() # TODO: Refactor code so it doesn't look like ****
 
     Sxx = ff_output['Sxx'].tocoo()
     Sxy = ff_output['Sxy'].tocoo()

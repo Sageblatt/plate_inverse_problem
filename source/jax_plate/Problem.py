@@ -328,6 +328,8 @@ class Problem:
                 data[mask] = self.mats[i].data[idx_perm]
                 self.mats[i] = data[perm]
 
+            self.mats = np.array(self.mats, dtype=np.float64)
+
             self.vec = processed_ff_output[1]
             self.interp_mat = processed_ff_output[2]
             self.interp_mat_Lh = processed_ff_output[3]
@@ -399,71 +401,69 @@ class Problem:
                                              solv_num=self.solver_num,
                                              cpu=self.n_cpu)
 
-            _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
-
-            return _get_afc
-
         else: # Non symmetrical case
-            transform=self.material.get_transform(self.geometry.height)
-            def _solve(f, params): # TODO:  DECIDE IF u AND v COMPONENTS AFFECT AFC
+            def _solve(f, params, m, transform, I0, I0Corr,
+                       I2, I2Corr, rhs_vec, solver_num, n_cpu,
+                       Lh_size, interp_mat, interp_mat_Lh): # TODO:  DECIDE IF u AND v COMPONENTS AFFECT AFC
                 omega = 2 * np.pi * f
                 A, B, D = transform(params, omega)
-                A = np.array(A)
-                B = np.array(B)
-                D = np.array(D)
 
-                m = self.mats
-                mat = np.zeros_like(m[0], dtype=np.complex128)
-                mat += -omega**2 * (self.I0 * m[18] + self.I0Corr * m[19] +
-                                    self.I0 * m[20] + self.I0Corr * m[21] +
-                                    self.I0 * m[22] + self.I0Corr * m[23] +
-                                    self.I2 * m[24] + self.I2Corr * m[25])
+                mat = jnp.zeros_like(m[0], dtype=np.complex128)
+                mat += -omega**2 * (I0 * (m[18] + m[20] + m[22]) +
+                                    I0Corr * (m[19] + m[21] + m[23]) +
+                                    I2 * m[24] + I2Corr * m[25])
                 for i in range(6):
                     mat += A[i] * m[i] + B[i] * m[i + 6] + D[i] * m[i + 12]
 
-                rhs = self.vec * (D[0] + 2*D[1] + 4*D[2] +
-                                  4*D[4] + 4*D[5] + D[3] - omega**2 *
-                                  (self.I0 + self.I0Corr + self.I2 + self.I2Corr))
+                rhs = rhs_vec * (D[0] + 2*D[1] + 4*D[2] + # Solver is correct for u, v = 0
+                                 4*D[4] + 4*D[5] + D[3] - omega**2 * # on Dirichlet boundary
+                                 (I0 + I0Corr + I2 + I2Corr))
 
 
-                sol = spsolve(mat, rhs, solver_num=self.solver_num, n_cpu=self.n_cpu)
+                sol = spsolve(mat, rhs, solver_num=solver_num, n_cpu=n_cpu)
 
-                u_sol = self.interp_mat_Lh @ sol[:self.Lh_size]
-                v_sol = self.interp_mat_Lh @ sol[self.Lh_size:2*self.Lh_size]
-                w_sol = self.interp_mat @ sol[2*self.Lh_size:]
+                u_sol = interp_mat_Lh @ sol[:Lh_size]
+                v_sol = interp_mat_Lh @ sol[Lh_size:2*Lh_size]
+                w_sol = interp_mat @ sol[2*Lh_size:]
 
-                u = np.mean(u_sol)
-                v = np.mean(v_sol)
-                w = np.mean(w_sol)
+                u = jnp.mean(u_sol)
+                v = jnp.mean(v_sol)
+                w = jnp.mean(w_sol)
 
-                uang = np.angle(u)
-                vang = np.angle(v)
-                wang = np.angle(w)
+                uang = jnp.angle(u)
+                vang = jnp.angle(v)
+                wang = jnp.angle(w)
 
                 uang_delta = uang - wang
                 vang_delta = vang - wang
 
-                u_abs = np.abs(u) * np.cos(uang_delta)
-                v_abs = np.abs(v) * np.cos(vang_delta)
-                w_abs = np.abs(w)
+                u_abs = jnp.abs(u) * jnp.cos(uang_delta)
+                v_abs = jnp.abs(v) * jnp.cos(vang_delta)
+                w_abs = jnp.abs(w)
 
-                res = np.sqrt(u_abs**2 + v_abs**2 + w_abs**2)
+                res = jnp.sqrt(u_abs**2 + v_abs**2 + w_abs**2)
                 # res = w_abs # TODO: DECIDE HOW MEAN IS CALCULATED
                 # res = np.mean(np.abs(acc_sol))
 
                 return res
 
-            def _get_afc(f, params):
-                if isinstance(f, np.ndarray):
-                    res = np.zeros(f.size, dtype=np.complex128)
-                    for i in range(f.size):
-                        res[i] = _solve(f[i], params)
-                        print(f'Progress: {i/f.size:.2f}')
-                    return res
-                else:
-                    return _solve(f, params)
+            _solve_p = jax.tree_util.Partial(_solve,
+                                             m=self.mats,
+                                             transform=self.material.get_transform(self.geometry.height),
+                                             I0=self.I0,
+                                             I0Corr=self.I0Corr,
+                                             I2=self.I2,
+                                             I2Corr=self.I2Corr,
+                                             rhs_vec=self.vec,
+                                             solver_num=self.solver_num,
+                                             n_cpu=self.n_cpu,
+                                             Lh_size=self.Lh_size,
+                                             interp_mat=self.interp_mat,
+                                             interp_mat_Lh=self.interp_mat_Lh)
 
-            return _get_afc
+        _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
+
+        return _get_afc
 
 
     def getModePicture(self, freq: int | float,
