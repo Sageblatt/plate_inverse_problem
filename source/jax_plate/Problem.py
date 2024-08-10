@@ -22,7 +22,7 @@ from jax_plate.pyFFInterface import load_matrices_symm, load_matrices_unsymm
 from jax_plate.Utils import get_source_dir
 from jax_plate.Optimizers import optimize_trust_region, optimize_cd, optimize_gd, optimize_cd_mem2
 from jax_plate.Optimizers import optResult
-from jax_plate.Sparse import spsolve, create_symbolic
+from jax_plate.Sparse import create_symbolic, find_permutation, spsolve
 
 
 class StaticNdArrayWrapper(np.ndarray):
@@ -309,17 +309,24 @@ class Problem:
                 sparsity_pattern = np.union1d(sparsity_pattern, unwind(self.mats[i]))
 
             self.sparsity = sparsity_pattern.size/self.mat_size**2
-            self.rows = sparsity_pattern % self.mat_size
-            self.cols = sparsity_pattern // self.mat_size
+            rows = sparsity_pattern % self.mat_size
+            cols = sparsity_pattern // self.mat_size
+
+            nz_idx = np.vstack((rows, cols)).T
+
+            nz_mask, self.solver_num = create_symbolic(self.mat_size, nz_idx,
+                                                       np.complex128)
+
+            perm = find_permutation(nz_idx, np.vstack(nz_mask).T, self.mat_size)
 
             for i in range(len(self.mats)):
                 idx = unwind(self.mats[i])
                 idx_perm = np.argsort(idx)
                 mask = np.isin(sparsity_pattern, idx[idx_perm], assume_unique=True)
 
-                data = np.zeros(self.rows.size, dtype=np.float64)
+                data = np.zeros(rows.size, dtype=np.float64)
                 data[mask] = self.mats[i].data[idx_perm]
-                self.mats[i] = data
+                self.mats[i] = data[perm]
 
             self.vec = processed_ff_output[1]
             self.interp_mat = processed_ff_output[2]
@@ -398,7 +405,6 @@ class Problem:
 
         else: # Non symmetrical case
             transform=self.material.get_transform(self.geometry.height)
-            from scipy.sparse.linalg import spsolve
             def _solve(f, params): # TODO:  DECIDE IF u AND v COMPONENTS AFFECT AFC
                 omega = 2 * np.pi * f
                 A, B, D = transform(params, omega)
@@ -419,10 +425,8 @@ class Problem:
                                   4*D[4] + 4*D[5] + D[3] - omega**2 *
                                   (self.I0 + self.I0Corr + self.I2 + self.I2Corr))
 
-                mat = coo_matrix((mat, (self.rows, self.cols)),
-                                 shape=(self.mat_size, self.mat_size))
 
-                sol = spsolve(mat, rhs)
+                sol = spsolve(mat, rhs, solver_num=self.solver_num, n_cpu=self.n_cpu)
 
                 u_sol = self.interp_mat_Lh @ sol[:self.Lh_size]
                 v_sol = self.interp_mat_Lh @ sol[self.Lh_size:2*self.Lh_size]

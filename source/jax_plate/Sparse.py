@@ -43,17 +43,21 @@ class SolverState:
 
 _SOLVER_STATE = SolverState()
 
-def find_permutation(arr1: np.ndarray, arr2: np.ndarray) -> np.ndarray:
+def find_permutation(arr1: np.ndarray[int], arr2: np.ndarray[int],
+                     max_val: int = None) -> np.ndarray[int]:
     """
     Finds numpy mask array such that `arr1[find_permutation(arr1, arr2)]`
     equals `arr2`. May give wrong results if permutation is not unique.
 
     Parameters
     ----------
-    arr1 : np.ndarray
-        Array with shape (N, 2).
-    arr2 : np.ndarray
-        Array with shape (N, 2).
+    arr1 : np.ndarray[int]
+        Array of non-negative integers with shape (N, 2).
+    arr2 : np.ndarray[int]
+        Array of non-negative integers with shape (N, 2).
+    max_val : int
+        Maximum value of both arrays. If `None`, this value
+        will be calculated via np.max(). The default is None.
 
     Returns
     -------
@@ -64,9 +68,21 @@ def find_permutation(arr1: np.ndarray, arr2: np.ndarray) -> np.ndarray:
     assert arr1.shape == arr2.shape
     assert arr1.shape[1] == 2
 
-    ind = np.where(np.equal(arr2[:, None], arr1[None, :]))[1]
-    mask = ind[np.where(np.diff(ind)==0)]
-    return np.array(mask, dtype=arr1.dtype)
+    if max_val is None:
+        max_val = np.max(arr1) + 1
+
+    def unwind(arr):
+        return arr[:, 0] + arr[:, 1] * max_val
+
+    u1 = unwind(arr1)
+    u2 = unwind(arr2)
+
+    is1 = np.argsort(u1)
+    is2 = np.argsort(u2)
+
+    inverse_is2 = is2[is2[is2]]
+    res = np.arange(u1.size)[is1][inverse_is2]
+    return np.array(res, dtype=arr1.dtype)
 
 FAMILIES = {(np.float64, np.int32): 'di',
             (np.float64, np.int64): 'dl',
@@ -94,7 +110,7 @@ def create_symbolic(N: int,
     coo_indices_T = np.vstack((m1_T.row, m1_T.col), dtype=indices.dtype).T
 
     indices_T = coo_indices[:, ::-1]
-    perm = find_permutation(indices_T, coo_indices_T)
+    perm = find_permutation(indices_T, coo_indices_T, N)
 
     res = _SOLVER_STATE.add_mat(mat, mat_T, coo_indices, perm)
     return (m1.row, m1.col), res
