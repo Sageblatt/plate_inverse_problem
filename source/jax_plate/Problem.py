@@ -493,66 +493,69 @@ class Problem:
         if params is None:
             params = self.parameters
 
-        def _solve(f, params, Ks, fKs, MInertia, fInertia,
-                   transform, solv_num, cpu):
-            omega = 2.0 * np.pi * f
+        if self.material.is_mps:
+            def _solve(f, params, Ks, fKs, MInertia, fInertia,
+                       transform, solv_num, cpu):
+                omega = 2.0 * np.pi * f
 
-            D = transform(params, omega)
-            K = jnp.einsum(Ks, [0, ...], D, [0])
+                D = transform(params, omega)
+                K = jnp.einsum(Ks, [0, ...], D, [0])
 
-            fK = jnp.einsum(fKs, [0, ...], D, [0])
+                fK = jnp.einsum(fKs, [0, ...], D, [0])
 
-            A = -(omega ** 2) * MInertia + K
-            b = -(omega ** 2) * fInertia + fK
+                A = -(omega ** 2) * MInertia + K
+                b = -(omega ** 2) * fInertia + fK
 
-            u = spsolve(A, b, solver_num=solv_num, n_cpu=cpu)
-            return u
+                u = spsolve(A, b, solver_num=solv_num, n_cpu=cpu)
+                return u
 
 
-        solve_p = jax.tree_util.Partial(_solve,
-                                        Ks=self.Ks / 2.0 / self.e,
-                                        fKs=self.fKs / 2.0 / self.e,
-                                        MInertia=self.MInertia,
-                                        fInertia=self.fInertia,
-                                        transform=self.material.get_transform(self.geometry.height),
-                                        solv_num=self.solver_num,
-                                        cpu=self.n_cpu)
+            solve_p = jax.tree_util.Partial(_solve,
+                                            Ks=self.Ks / 2.0 / self.e,
+                                            fKs=self.fKs / 2.0 / self.e,
+                                            MInertia=self.MInertia,
+                                            fInertia=self.fInertia,
+                                            transform=self.material.get_transform(self.geometry.height),
+                                            solv_num=self.solver_num,
+                                            cpu=self.n_cpu)
 
-        unconstr = solve_p(freq, params)
-        complete_solution = self.boundary_value
-        complete_solution[~self.constrained_idx] = np.abs(unconstr)
+            unconstr = solve_p(freq, params)
+            complete_solution = self.boundary_value
+            complete_solution[~self.constrained_idx] = np.abs(unconstr)
 
-        script = pyff.edpScript('load "Morley"')
-        script += pyff.InputScript(Th=self.mesh)
-        script += """
-        fespace Vh(Th, P2Morley);
-        Vh [u, ux, uy], [v, vx, vy];
-        """
-
-        script += pyff.InputScript(u=complete_solution, declare=False)
-
-        if use_freefem:
+            script = pyff.edpScript('load "Morley"')
+            script += pyff.InputScript(Th=self.mesh)
             script += """
-            plot(u, value=true, fill=true, wait=true, nbiso=20);
+            fespace Vh(Th, P2Morley);
+            Vh [u, ux, uy], [v, vx, vy];
             """
-            script.get_output()
 
+            script += pyff.InputScript(u=complete_solution, declare=False)
+
+            if use_freefem:
+                script += """
+                plot(u, value=true, fill=true, wait=true, nbiso=20);
+                """
+                script.get_output()
+
+            else:
+                script += """
+                fespace Vh2(Th, P1);
+                Vh2 s=u;
+                """
+                script += pyff.OutputScript(s="vector")
+                vec = script.get_output()['s']
+                cf = plt.tricontourf(self.mesh, vec, 2000, cmap='coolwarm', norm='symlog',
+                                     antialiased=False)
+                plt.gca().set_aspect('equal')
+
+                plt.colorbar(cf, orientation='horizontal', location='bottom',
+                             pad=0.05)
+                self.mesh.plot_triangles( color = 'k', alpha = .4, lw = .4 )
+
+                plt.axis('off')
         else:
-            script += """
-            fespace Vh2(Th, P1);
-            Vh2 s=u;
-            """
-            script += pyff.OutputScript(s="vector")
-            vec = script.get_output()['s']
-            cf = plt.tricontourf(self.mesh, vec, 2000, cmap='coolwarm', norm='symlog',
-                                 antialiased=False)
-            plt.gca().set_aspect('equal')
-
-            plt.colorbar(cf, orientation='horizontal', location='bottom',
-                         pad=0.05)
-            self.mesh.plot_triangles( color = 'k', alpha = .4, lw = .4 )
-
-            plt.axis('off')
+            raise NotImplementedError('Mode picture for non-symmetric solver.')
 
 
     def solveForward(self, freqs: np.ndarray,
