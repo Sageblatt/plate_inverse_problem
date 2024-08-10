@@ -343,10 +343,10 @@ class Problem:
             else:
                 rho_corr = 0.0
 
-            self.I0 = self.h * self.rho
+            self.I0 = self.geometry.height * self.rho
             self.I0Corr = self.geometry.height * rho_corr
             self.I2 = self.rho * self.geometry.height**3 / 12
-            self.I2Corr = self.rho_corr * self.geometry.height**3 / 12
+            self.I2Corr = rho_corr * self.geometry.height**3 / 12
 
 
     @functools.cache
