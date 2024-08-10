@@ -272,11 +272,10 @@ class Problem:
             self.fInertia = self.rho * (self.fM + 1.0 / 3.0 * self.e ** 2 * self.fL)
 
             if self.accelerometer is not None:
-                # TODO: check e vs 2e=h
                 rho_corr = (
                     self.accelerometer.mass
                     / (np.pi * self.accelerometer.radius ** 2)
-                    / self.e
+                    / self.geometry.height
                 )
                 self.MInertia += rho_corr * (
                     MCorrection + 1.0 / 3.0 * self.e ** 2 * LCorrection
@@ -335,16 +334,19 @@ class Problem:
             self.interp_mat_Lh = processed_ff_output[3]
             self.Lh_size = processed_ff_output[4]
             self.Mh_size = processed_ff_output[5]
-            self.rho_corr = (
-                self.accelerometer.mass
-                / (np.pi * self.accelerometer.radius ** 2)
-                / self.e
-            )
-            self.h = self.geometry.height
+
+            if self.accelerometer is not None:
+                rho_corr = (
+                    self.accelerometer.mass
+                    / (np.pi * self.accelerometer.radius ** 2)
+                    / self.geometry.height)
+            else:
+                rho_corr = 0.0
+
             self.I0 = self.h * self.rho
-            self.I0Corr = self.h*self.rho_corr
-            self.I2 = self.rho * self.h**3 / 12
-            self.I2Corr = self.rho_corr * self.h**3 / 12
+            self.I0Corr = self.geometry.height * rho_corr
+            self.I2 = self.rho * self.geometry.height**3 / 12
+            self.I2Corr = self.rho_corr * self.geometry.height**3 / 12
 
 
     @functools.cache
