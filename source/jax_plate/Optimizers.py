@@ -142,6 +142,8 @@ def get_model_newt(f):
 #    n = r.shape[0]
 #    J = res_jacobian(u_ref, w, dv, p)
 #    return r.T@r/n, r.T@J/n, J.T@J/n
+
+#TODO: make it a dataclass
 optResult = namedtuple(
     "optResult",
     ["x", "f", "f_history", "x_history", "grad_history", "niter", "status"],

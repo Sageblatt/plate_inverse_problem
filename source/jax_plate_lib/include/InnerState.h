@@ -19,6 +19,8 @@ namespace py = pybind11;
 using ShapeContainer = py::detail::any_container<ssize_t>;
 
 // TODO: fight with code duplication
+// TODO: InnerState::solve vectorization of b allows to factorize data once instead of 
+// every for loop cycle
 
 /*
  * Helper functions

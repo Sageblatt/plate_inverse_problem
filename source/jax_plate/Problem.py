@@ -215,7 +215,7 @@ class Problem:
                                    'in setup.json nor as an argument.')
         if self.material.has_params:
             self.parameters = self.material.get_parameters()
-        else:
+        else: # TODO: print out which moduli are absent
             warnings.warn('Some elastic moduli of a material were not provided, '
                           'solving forward problem as standalone will not be '
                           'possible.', RuntimeWarning)
@@ -756,7 +756,7 @@ class Problem:
         elif optimizer in ('grad_descent', 'gd'):
             optimizer_func = optimize_gd
 
-        elif optimizer == 'de':
+        elif optimizer == 'de': # TODO: add constaints (E1 > E2 etc)
             optimizer_func = differential_evolution
         else:
             raise ValueError(f'Optimizer type `{optimizer}` is not supported!')
