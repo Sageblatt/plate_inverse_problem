@@ -202,7 +202,8 @@ def load_matrices_unsymm(fname: str):
     //complex[int] vBC0 = concatenate(vBCL, vBCL);
     //complex[int] vBC = concatenate(vBC0, vBCM);
 
-    border CAccin(t=0., 2*pi){x=offsetAccelX + 0.3*rAccel*cos(t); y=offsetAccelY + 0.3*rAccel*sin(t); label=3;}
+    real innermult = 0.3;
+    border CAccin(t=0., 2*pi){x=offsetAccelX + innermult*rAccel*cos(t); y=offsetAccelY + innermult*rAccel*sin(t); label=3;}
     int[int] u2vc = [0];
     mesh accTh = buildmesh(CAccin(64)); // Cubature formula would be better! Disc: https://doi.org/10.1007/s002110050358 ---------------------------------------------
     fespace midVh(accTh, P1); // More intermediate interpolation steps?----------------------------------------------------------
@@ -235,6 +236,8 @@ def load_matrices_unsymm(fname: str):
         Ryxx='int2d(Th)(dy(r)*dxx(w))',
         Ryyy='int2d(Th)(dy(r)*dyy(w))',
         Ryxy='int2d(Th)(dy(r)*dxy(w))',
+        M13 ='int2d(Th)(-indAccel*r*dx(w))',
+        M23 ='int2d(Th)(-indAccel*r*dy(w))',
         functions=['w', 'r'],
         fespaces=['Mh', 'Lh']
     )
@@ -292,6 +295,9 @@ def load_matrices_unsymm(fname: str):
     Ryxx = ff_output['Ryxx'].tocoo()
     Ryyy = ff_output['Ryyy'].tocoo()
     Ryxy = ff_output['Ryxy'].tocoo()
+
+    M13 = ff_output['M13'].tocoo()
+    M23 = ff_output['M23'].tocoo()
 
     Txxxx = ff_output['Txxxx'].tocoo()
     Txxyy = ff_output['Txxyy'].tocoo()
@@ -477,6 +483,18 @@ def load_matrices_unsymm(fname: str):
     KM11 = resize(M11)
     KM11Corr = resize(M11Correction)
 
+    KM13 = resize(M13)
+    move(KM13, 2, 0)
+    KM13 = transp(KM13)
+    rmrows_lh(KM13, 1)
+    rmrows_mh(KM13)
+
+    KM23 = resize(M23)
+    move(M23, 2, 1)
+    KM23 = transp(KM23)
+    rmrows_lh(KM23, 2)
+    rmrows_mh(KM23)
+
     KM22 = resize(M11)
     move(KM22, 1, 1)
     KM22Corr = resize(M11Correction)
@@ -497,5 +515,6 @@ def load_matrices_unsymm(fname: str):
     return ([KA11, KA12, KA16, KA22, KA26, KA66,
             KB11, KB12, KB16, KB22, KB26, KB66,
             KD11, KD12, KD16, KD22, KD26, KD66,
-            KM11, KM11Corr, KM22, KM22Corr, KM33, KM33Corr, KM33I2, KM33I2Corr],
+            KM11, KM11Corr, KM22, KM22Corr, KM33,
+            KM33Corr, KM33I2, KM33I2Corr, KM13, KM23],
             rhs_vec, interp_mat, interp_mat_Lh, Lh_size, Mh_size)

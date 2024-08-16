@@ -272,16 +272,31 @@ class Problem:
             self.fInertia = self.rho * (self.fM + 1.0 / 3.0 * self.e ** 2 * self.fL)
 
             if self.accelerometer is not None:
-                rho_corr = (
+                # rho_corr = (
+                #     self.accelerometer.mass
+                #     / (np.pi * self.accelerometer.radius ** 2)
+                #     / self.geometry.height
+                # )
+                # self.MInertia += rho_corr * (
+                #     MCorrection + 1.0 / 3.0 * self.e ** 2 * LCorrection
+                # )
+                # self.fInertia += rho_corr * (
+                #     fMCorrection + 1.0 / 3.0 * self.e ** 2 * fLCorrection
+                # )
+                rho_corr = ( #TODO: CHECK AGAIN IF CORRECTED VALUES ARE RIGHT
                     self.accelerometer.mass
                     / (np.pi * self.accelerometer.radius ** 2)
-                    / self.geometry.height
+                    / self.accelerometer.height
                 )
-                self.MInertia += rho_corr * (
-                    MCorrection + 1.0 / 3.0 * self.e ** 2 * LCorrection
+                self.MInertia += rho_corr / self.geometry.height * (
+                    MCorrection * self.accelerometer.height
+                    + LCorrection / 3.0 * ((self.geometry.height/2 + self.accelerometer.height)**3
+                                                  - self.geometry.height**3/8)
                 )
-                self.fInertia += rho_corr * (
-                    fMCorrection + 1.0 / 3.0 * self.e ** 2 * fLCorrection
+                rho_corr / self.geometry.height * (
+                    fMCorrection * self.accelerometer.height
+                    + fLCorrection / 3.0 * ((self.geometry.height/2 + self.accelerometer.height)**3
+                                                  - self.geometry.height**3/8)
                 )
 
             self.interpolation_vector = np.array(processed_ff_output["interpolation_vector"],
@@ -336,17 +351,27 @@ class Problem:
             self.Mh_size = processed_ff_output[5]
 
             if self.accelerometer is not None:
-                rho_corr = (
-                    self.accelerometer.mass
-                    / (np.pi * self.accelerometer.radius ** 2)
-                    / self.geometry.height)
+                # rho_corr = (
+                #     self.accelerometer.mass
+                #     / (np.pi * self.accelerometer.radius ** 2)
+                #     / self.geometry.height)
+                rho_corr = (self.accelerometer.mass
+                            / (np.pi * self.accelerometer.radius ** 2)
+                            / self.accelerometer.height)
             else:
                 rho_corr = 0.0
 
             self.I0 = self.geometry.height * self.rho
-            self.I0Corr = self.geometry.height * rho_corr
+            # self.I0Corr = self.geometry.height * rho_corr
+            self.I0Corr = self.accelerometer.height * rho_corr
+
             self.I2 = self.rho * self.geometry.height**3 / 12
-            self.I2Corr = rho_corr * self.geometry.height**3 / 12
+            # self.I2Corr = rho_corr * self.geometry.height**3 / 12
+            self.I2Corr = rho_corr / 3 * ((self.geometry.height/2 + self.accelerometer.height)**3
+                                          - self.geometry.height**3/8)
+
+            self.I1 = rho_corr / 2 * ((self.geometry.height/2 + self.accelerometer.height)**2
+                                      - self.geometry.height**2/4)
 
 
     @functools.cache
@@ -404,7 +429,7 @@ class Problem:
                                              cpu=self.n_cpu)
 
         else: # Non symmetrical case
-            def _solve(f, params, m, transform, I0, I0Corr,
+            def _solve(f, params, m, transform, I0, I0Corr, I1,
                        I2, I2Corr, rhs_vec, solver_num, n_cpu,
                        Lh_size, interp_mat, interp_mat_Lh): # TODO:  DECIDE IF u AND v COMPONENTS AFFECT AFC
                 omega = 2 * np.pi * f
@@ -413,7 +438,8 @@ class Problem:
                 mat = jnp.zeros_like(m[0], dtype=np.complex128)
                 mat += -omega**2 * (I0 * (m[18] + m[20] + m[22]) +
                                     I0Corr * (m[19] + m[21] + m[23]) +
-                                    I2 * m[24] + I2Corr * m[25])
+                                    I2 * m[24] + I2Corr * m[25] +
+                                    I1 * (m[26] + m[27]))
                 for i in range(6):
                     mat += A[i] * m[i] + B[i] * m[i + 6] + D[i] * m[i + 12]
 
@@ -445,7 +471,7 @@ class Problem:
 
                 res = jnp.sqrt(u_abs**2 + v_abs**2 + w_abs**2)
                 # res = w_abs # TODO: DECIDE HOW MEAN IS CALCULATED
-                # res = np.mean(np.abs(acc_sol))
+                # res = jnp.mean(jnp.abs(w_sol))
 
                 return res
 
@@ -454,6 +480,7 @@ class Problem:
                                              transform=self.material.get_transform(self.geometry.height),
                                              I0=self.I0,
                                              I0Corr=self.I0Corr,
+                                             I1=self.I1,
                                              I2=self.I2,
                                              I2Corr=self.I2Corr,
                                              rhs_vec=self.vec,

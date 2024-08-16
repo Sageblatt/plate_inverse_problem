@@ -317,7 +317,7 @@ class SOL(Orthotropic):
 
     def get_save_dict(self):
         sup_dict = super().get_save_dict()
-        return ({x: sup_dict[x] for x in sup_dict if x != '_Q_to_D_matrix'} |
+        return ({x: sup_dict[x] for x in sup_dict if x != '_Q_to_ABD_matrices'} |
                 {'angles': list(self.angles)})
 
     @functools.cached_property
