@@ -8,10 +8,18 @@ import jax
 from jax.tree_util import Partial
 import jax.numpy as jnp
 import numpy as np
+import scipy.optimize
 import sympy as sp
 from sympy.solvers.solveset import linear_eq_to_matrix
 
 from jax_plate.Utils import get_jax_plate_dir
+
+
+"""
+Accelerometer has posisitve z coordinate values,
+theta angles are measured counterclockwise from x coordinate.
+First layer has minimal z coordinate (negative value).
+"""
 
 
 ATYPES = {'isotropic': {'E', 'G', 'beta'},
@@ -134,20 +142,86 @@ class Material(abc.ABC):
         """
         pass
 
-    # TODO: implement
-    # @abc.abstractmethod
-    # def check_parameters(self) -> bool:
-    #     """
-    #     Method that checks if parameters are correct. For instance, for isotropic
-    #     material Young's modulus E cannot be negative.
+    @abc.abstractmethod
+    def _get_constr_func_bounds(self,
+                                scaling_params: np.ndarray | float
+                                ) -> tuple[Callable, np.ndarray, np.ndarray]:
+        """
+        Method that returns constraints of material parameters in form:
+            lb <= fun(x) <= ub,
+        where `x` is the array of material parameters, `lb`, `fun(x)` and `ub`
+        are arrays of size `n` -- overall amount of inequalities.
 
-    #     Returns
-    #     -------
-    #     bool
-    #         `True` if all elastic moduli are correct, else `False`.
+        Parameters
+        ----------
+        scaling_params : numpy.ndarray
+            Parameters that are used for scaling elastic moduli during
+            optimization. The default is None (no scaling applied).
 
-    #     """
-    #     pass
+        Returns
+        -------
+        (Callable, np.ndarray, np.ndarray)
+            `fun`, `lb` and `ub` respectively. `fun` is compatible with `jax`
+            transforms.
+
+        """
+        pass
+
+    @classmethod
+    def get_constraints(cls,
+                        scaling_params: np.ndarray = None
+                        ) -> scipy.optimize.NonlinearConstraint:
+        """
+        Method that returns scipy constraint to be used in optimization.
+
+        Parameters
+        ----------
+        scaling_params : numpy.ndarray
+            Parameters that are used for scaling elastic moduli during
+            optimization. The default is None (no scaling applied).
+
+        Returns
+        -------
+        scipy.optimize.NonlinearConstraint
+            Constraint object.
+
+        """
+        if scaling_params is None:
+            scaling_params = 1.0
+        else:
+            scaling_params = scaling_params.copy()
+
+        fun, lb, ub = cls._get_constr_func_bounds(scaling_params)
+        fun_jac = jax.jit(jax.jacobian(fun))
+
+        def dot_func(x, v):
+            return jax.numpy.dot(fun(x), v)
+
+        fun_hess = jax.jit(jax.hessian(dot_func))
+        return scipy.optimize.NonlinearConstraint(fun, lb, ub, jac=fun_jac,
+                                                  hess=fun_hess)
+
+    def check_parameters(self, params: np.ndarray) -> bool:
+        """
+        Method that checks if parameters are correct. For instance, for isotropic
+        material Young's modulus E cannot be negative.
+
+        Parameters
+        ----------
+        params : numpy.ndarray
+            Material parameters to check for correctness.
+
+        Returns
+        -------
+        bool
+            `True` if all elastic moduli are correct, else `False`.
+
+        """
+        fun, lb, ub = self._get_constr_func_bounds()
+        fun_vals = np.array(fun(params))
+        lhs = lb <= fun_vals
+        rhs = fun_vals <= ub
+        return np.all(lhs * rhs)
 
     def get_save_dict(self) -> dict:
         """
@@ -247,6 +321,25 @@ class Isotropic(Material):
 
         return Partial(_transform, _h=h)
 
+    @staticmethod
+    def _get_constr_func_bounds(scaling_params: np.ndarray | float = 1.0):
+        """
+        E > 0
+        G > 0
+        beta > 0
+        0 < nu < 0.5 (2G < E < 3G)
+        """
+        def constr_func(params):
+            params = params * scaling_params
+            nu = params[0] / (2.0 * params[1]) - 1.0
+            return jnp.array([params[0], params[1],
+                              params[2], nu], dtype=jnp.float64)
+
+        eps = 1e-12
+        lb = np.full(4, eps)
+        ub = np.array([np.inf, np.inf, np.inf, 0.5 - eps])
+        return constr_func, lb, ub
+
 
 class Orthotropic(Material):
     def __init__(self, density: float,
@@ -317,6 +410,31 @@ class Orthotropic(Material):
             return Ds
 
         return Partial(_transform, _h=h)
+
+    @staticmethod
+    def _get_constr_func_bounds(scaling_params: np.ndarray | float = 1.0):
+        """
+        E1 > 0
+        E2 > 0
+        G12 > 0
+        nu12 > 0
+        beta > 0
+        sqrt(E1/E2) - nu12 > 0
+        E1 - E2 > 0
+        E1 - G12 > 0
+        """
+        def constr_func(params):
+            params = params * scaling_params
+            nu12_coef = jnp.sqrt(params[0] / params[1]) - params[3]
+            return jnp.array([params[0], params[1], params[2],
+                              params[3], params[4], nu12_coef,
+                              params[0] - params[1],
+                              params[0] - params[2]], dtype=jnp.float64)
+
+        eps = 1e-12
+        lb = np.full(8, eps)
+        ub = np.full(8, np.inf)
+        return constr_func, lb, ub
 
 
 class OrthotropicD4(Material):
@@ -403,6 +521,10 @@ class OrthotropicD4(Material):
             return Ds
 
         return Partial(_transform, _h=h)
+
+    @staticmethod
+    def _get_constr_func_bounds(): # TODO: implement
+        raise NotImplementedError()
 
 
 class SOL(Orthotropic):
@@ -625,25 +747,48 @@ class SymmetricalSOL(SOL):
             raise NotImplementedError('Transform without A_ij and B_ij matrices'
                                       'for not midplane-symmetric composites.')
 
-            A = np.array(_matA.evalf(subs={'h': h}), dtype=np.float64)
-            B = np.array(_matB.evalf(subs={'h': h}), dtype=np.float64)
-            D = np.array(_matD.evalf(subs={'h': h}), dtype=np.float64)
+    @staticmethod
+    def _get_constr_func_bounds(scaling_params: np.ndarray | float = 1.0):
+        """
+        E1 > 0
+        G12 > 0
+        0 < nu12 < 1
+        beta > 0
+        E1 - G12 > 0
+        """
+        def constr_func(params):
+            params = params * scaling_params
+            return jnp.array([params[0], params[1], params[2], params[3],
+                              params[0] - params[1]], dtype=jnp.float64)
 
-            def _transform(params, *args, _MA, _MB, _MD):
-                E1 = params[0]
-                E2 = params[0]
-                G12 = params[1]
-                nu12 = params[2]
-                beta = params[3]
+        eps = 1e-12
+        lb = np.full(5, eps)
+        ub = np.full(5, np.inf)
+        ub[2] = 1.0 - eps
+        return constr_func, lb, ub
 
-                den = 1 - E1 / E2 * nu12 ** 2
-                Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
-                As = (_MA @ Q)  * (1 + 1j * beta)
-                Bs = (_MB @ Q)  * (1 + 1j * beta)
-                Ds = (_MD @ Q)  * (1 + 1j * beta)
-                return As, Bs, Ds
+    @staticmethod
+    def get_constraints(scaling_params: np.ndarray | float = None
+                        ) -> scipy.optimize.LinearConstraint:
+        """
+        Overrides interface method Material.get_constraints()
+        as SymmetricalSOL has `linear` constraints.
 
-            return Partial(_transform, _MA=A, _MB=B, _MD=D)
+        """
+        if scaling_params is None:
+            scaling_params = np.full(4, 1.0)
+
+        A = np.eye(5, 4)
+        A[4, 0] = 1.0
+        A[4, 1] = -1.0
+
+        A = A * scaling_params[:, None].T
+
+        eps = 1e-12
+        lb = np.full(5, eps)
+        ub = np.full(5, np.inf)
+        ub[2] = 1.0 - eps
+        return scipy.optimize.LinearConstraint(A, lb, ub)
 
 
 def get_material(main_arg: str | float | int | dict,

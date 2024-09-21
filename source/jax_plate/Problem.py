@@ -636,6 +636,7 @@ class Problem:
                      ref_fr: tuple[np.ndarray, np.ndarray] = None,
                      use_rel: bool = False,
                      use_scaling: bool = False,
+                     use_constraints: bool = False,
                      report: bool = True,
                      log: bool = True,
                      case_name: str = '',
@@ -695,6 +696,10 @@ class Problem:
             Local optimizers may benefit from using scaled to 1 parameters instead
             of actual elastic moduli which may have value around 1e9. (Works
             if all parameters have non-zero values.)
+        use_constraints : bool, optional
+            If `True`, uses constrains from Material.get_constraints in
+            optimization to ensure that moduli are physically correct.
+            The default is False.
         report : bool, optional
             Generate human-readable report with optimization parameters.
             The default is True.
