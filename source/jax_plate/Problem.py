@@ -11,8 +11,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import numpy.typing as npt
 import pyFreeFem as pyff
-from scipy.optimize import differential_evolution
-from scipy.sparse import coo_matrix
+from scipy.optimize import differential_evolution, shgo, OptimizeResult
 
 from jax_plate.Accelerometer import Accelerometer, AccelerometerParams
 from jax_plate.Material import Material, get_material
@@ -636,6 +635,7 @@ class Problem:
                      comp_alg: int = 1,
                      ref_fr: tuple[np.ndarray, np.ndarray] = None,
                      use_rel: bool = False,
+                     use_scaling: bool = False,
                      report: bool = True,
                      log: bool = True,
                      case_name: str = '',
@@ -674,6 +674,8 @@ class Problem:
                 See jax_plate.Optimizers.optimize_gd.
                 - 'de', differential evolution algorithm.
                 See scipy.optimize.differential_evolution.
+                - 'shgo', simplicial homology global optimization.
+                See scipy.optimize.shgo.
         compression : list[bool, int], optional
             A tuple, in which the first element defines whether a compression
             algorithm for reference frequency response will be used or not.
@@ -689,6 +691,10 @@ class Problem:
         use_rel : bool, optional
             See `arg0` argument description. If `arg0` defines bounds does
             nothing. The default is False.
+        use_scaling : bool, optional
+            Local optimizers may benefit from using scaled to 1 parameters instead
+            of actual elastic moduli which may have value around 1e9. (Works
+            if all parameters have non-zero values.)
         report : bool, optional
             Generate human-readable report with optimization parameters.
             The default is True.
@@ -735,9 +741,9 @@ class Problem:
             comp = Compressor(ref_fr[0], ref_fr[1], compression[1], comp_alg)
             ref_fr[0], ref_fr[1] = comp(compression[1])
 
-        loss = self.getLossFunction(ref_fr[0], ref_fr[1], loss_type)
-
         arg0 = np.array(arg0)
+
+        scaling_params = None
 
         if arg0.ndim == 1:
             if use_rel:
@@ -748,14 +754,33 @@ class Problem:
 
                 else:
                     x0_bds = jnp.array(self.parameters) * (jnp.array(arg0) + 1)
+                    if use_scaling:
+                        scaling_params = x0_bds
+                        x0_bds = (jnp.array(arg0) + 1)
             else:
                 x0_bds = jnp.array(arg0)
+                if use_scaling:
+                    scaling_params = x0_bds
+                    x0_bds = jnp.ones_like(x0_bds)
 
         elif arg0.ndim == 2:
-            x0_bds = arg0
+            if use_scaling:
+                scaling_params = np.max(np.abs(arg0), axis=1)
+                x0_bds = arg0 / scaling_params[:, None]
+            else:
+                x0_bds = arg0
 
         else:
             raise ValueError('Invalid shape of `arg0` argument.')
+
+        loss = self.getLossFunction(ref_fr[0], ref_fr[1], loss_type, scaling_params)
+
+        if scaling_params is None:
+            scaling_params = np.ones_like(x0_bds)
+
+        elif x0_bds.ndim == 2:
+            scaling_params = np.tile(scaling_params, (2, 1)).T
+
 
         if optimizer in ('trust_region', 'tr'):
             optimizer_func = optimize_trust_region
@@ -771,6 +796,21 @@ class Problem:
 
         elif optimizer == 'de': # TODO: add constaints (E1 > E2 etc)
             optimizer_func = differential_evolution
+
+        elif optimizer == 'shgo':
+            optimizer_func = shgo
+            if use_constraints:
+                opt_kwargs['constraints'] = self.material.get_constraints(scaling_params[:, 0])
+
+            loss_grad = jax.jit(jax.grad(loss))
+            loss_hess = jax.jit(jax.jacobian(loss_grad))
+            if 'options' in opt_kwargs:
+                opt_kwargs['options']['jac'] = loss_grad
+                opt_kwargs['options']['hess'] = loss_hess
+            else:
+                opt_kwargs['options'] = {'jac': loss_grad}
+                opt_kwargs['options'] = {'hess': loss_hess}
+
         else:
             raise ValueError(f'Optimizer type `{optimizer}` is not supported!')
 
@@ -779,6 +819,16 @@ class Problem:
         t_end = perf_counter()
         elapsed = (t_end - t_start) / 60
 
+        if use_scaling:
+            print(type(result))
+            d = dict(result)
+            if scaling_params.ndim == 1:
+                d['x'] = d['x'] * scaling_params
+            else:
+                d['x'] = d['x'] * scaling_params[:, 1]
+            result = OptimizeResult(d)
+            print(result)
+
         if uid is None:
             date_str = strftime("%d_%m_%Y_%H_%M_%S", gmtime())
             full_str = case_name + date_str
@@ -786,9 +836,12 @@ class Problem:
         else:
             full_str = case_name + uid
 
-        if optimizer == 'de': # For compatibility with Optimizers.optResult
+        if optimizer in ('de', 'shgo'): # For compatibility with Optimizers.optResult
             setattr(result, 'f', result.fun)
-            setattr(result, 'x_history', result.population)
+            if optimizer == 'de':
+                setattr(result, 'x_history', result.population)
+            else:
+                setattr(result, 'x_history', result.xl)
             setattr(result, 'f_history', [-1.0])
             setattr(result, 'status', result.message)
             setattr(result, 'niter', result.nit)
@@ -799,7 +852,7 @@ class Problem:
             if getattr(self, 'parameters', None) is not None:
                 params0 = np.array(self.parameters)
                 if arg0.ndim != 2:
-                    rel_err1 = (np.array(x0_bds) - params0 ) / params0
+                    rel_err1 = (np.array(x0_bds) * scaling_params - params0 ) / params0
                 rel_err2 = (np.array(result.x) - params0) / params0
 
             def a2s(s):
@@ -817,7 +870,7 @@ class Problem:
 
             rep_str = (f'{self.accelerometer}\n{self.material}\n{self.geometry}\n'
                        + extra_info + comp_str +
-                       f'Starting {s_pa_bd}: {a2s(x0_bds)}.\n'
+                       f'Starting {s_pa_bd}: {a2s(x0_bds * scaling_params)}.\n'
                        f'With relative error: {a2s(rel_err1)}.\n'
                        f'Initial loss: {result.f_history[0]}.\n'
                        f'Elapsed time: {elapsed} min.\n'
@@ -825,8 +878,9 @@ class Problem:
                        f'With relative error: {a2s(rel_err2)}.\n'
                        f'Resulting loss: {result.f}.\n'
                        f'Optimization status: {result.status}.\n'
-                       f'Optimizer parameters: {opt_kwargs}\n'
-                       f'Optimizer type: {optimizer}.\n')
+                       f'Optimizer parameters: {opt_kwargs}.\n'
+                       f'Optimizer type: {optimizer}.\n'
+                       f'Scaling parameters used: {scaling_params}.\n')
             print(rep_str, end='')
 
             full_path = os.path.join(get_source_dir(), 'optimization',
@@ -863,38 +917,48 @@ class Problem:
     def getLossFunction(self,
                         frequencies: jax.Array,
                         reference_fr: jax.Array,
-                        func_type: str) -> Callable:
+                        func_type: str,
+                        scaling_params: jax.Array = None) -> Callable:
         assert frequencies.shape[0] == reference_fr.shape[0]
         fr_function = self.getFRFunction()
 
+        res = None
+
+        if scaling_params is None:
+            scaling_params = 1.0
+        else:
+            scaling_params = scaling_params.copy()
+
         if func_type == "MSE":
             def MSELoss(params):
-                fr = fr_function(frequencies, params)
+                fr = fr_function(frequencies, params * scaling_params)
                 return jnp.mean(jnp.abs(fr - reference_fr) ** 2)
 
-            return MSELoss
+            res = MSELoss
 
         elif func_type == "RMSE":
             def RMSELoss(params):
-                fr = fr_function(frequencies, params)
+                fr = fr_function(frequencies, params * scaling_params)
                 return jnp.mean(jnp.abs((fr - reference_fr) / reference_fr) ** 2)
 
-            return RMSELoss
+            res = RMSELoss
 
         elif func_type == "MSE_AFC":
             def MSE_AFCLoss(params):
-                fr = fr_function(frequencies, params)
+                fr = fr_function(frequencies, params * scaling_params)
                 return jnp.mean((jnp.abs(fr) - jnp.abs(reference_fr)) ** 2)
 
-            return MSE_AFCLoss
+            res = MSE_AFCLoss
 
         elif func_type == "MSE_LOG_AFC":
             def MSE_LOG_AFCLoss(params):
-                fr = fr_function(frequencies, params)
+                fr = fr_function(frequencies, params * scaling_params)
                 return jnp.mean((jnp.log(jnp.abs(fr)) -
                                  jnp.log(jnp.abs(reference_fr))) ** 2)
 
-            return MSE_LOG_AFCLoss
+            res = MSE_LOG_AFCLoss
 
         else:
             raise ValueError(f'Function type "{func_type}" is not supported!')
+
+        return jax.jit(res)
