@@ -232,7 +232,7 @@ class Orthotropic(Material):
             nu12 = params[3]
             beta = params[4]
 
-            E_ratio = E1 / E2
+            E_ratio = E2 / E1
             nu21 = E_ratio * nu12
 
             D11 = E1 * h ** 3 / (12 * (1 - nu12 * nu21))
@@ -285,7 +285,7 @@ class OrthotropicD4(Material):
             G12 = params[2] * (1 + 1j * b3)
             nu12 = params[3] * (1 + 1j * b4)
 
-            E_ratio = E1 / E2
+            E_ratio = E2 / E1
             nu21 = E_ratio * nu12
 
             D11 = E1 * h ** 3 / (12 * (1 - nu12 * nu21))
@@ -481,7 +481,7 @@ class SymmetricalSOL(SOL):
                 nu12 = params[2]
                 beta = params[3]
 
-                den = 1 - E1 / E2 * nu12 ** 2
+                den = 1 - E2 / E1 * nu12 ** 2
                 Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
                 Ds = (_M @ Q)  * (1 + 1j * beta)
                 return Ds
