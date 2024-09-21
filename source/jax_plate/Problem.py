@@ -226,7 +226,7 @@ class Problem:
         self.e = self.geometry.height / 2.0
         self.rho = self.material.density
 
-        if self.material.is_mps:
+        if self.material.is_mps and self.accelerometer is None:
             processed_ff_output = load_matrices_symm(self.geometry.current_file)
 
             m_names = ['M', 'L', "MCorrection", "LCorrection"]
@@ -309,6 +309,7 @@ class Problem:
             self.boundary_value = processed_ff_output['boundary_value']
 
         else: # Not symmetric case
+            # TODO: check int32 overflow in sparse indices!!!!!!!!
             processed_ff_output = load_matrices_unsymm(self.geometry.current_file)
             self.mats = processed_ff_output[0]
 
@@ -387,7 +388,7 @@ class Problem:
             test point.
 
         """
-        if self.material.is_mps:
+        if self.material.is_mps and self.accelerometer is None:
             def _solve(f, params, Ks, fKs, MInertia, fInertia,
                        interpolation_vector, interpolation_value_from_bc,
                        transform, solv_num, cpu):
@@ -424,7 +425,7 @@ class Problem:
                                              fInertia=self.fInertia,
                                              interpolation_vector=self.interpolation_vector,
                                              interpolation_value_from_bc=self.interpolation_value_from_bc,
-                                             transform=self.material.get_transform(self.geometry.height),
+                                             transform=self.material.get_D_transform(self.geometry.height),
                                              solv_num=self.solver_num,
                                              cpu=self.n_cpu)
 
@@ -462,22 +463,34 @@ class Problem:
                 vang = jnp.angle(v)
                 wang = jnp.angle(w)
 
-                uang_delta = uang - wang
-                vang_delta = vang - wang
+                # uang_delta = uang - wang
+                # vang_delta = vang - wang
 
-                u_abs = jnp.abs(u) * jnp.cos(uang_delta)
-                v_abs = jnp.abs(v) * jnp.cos(vang_delta)
-                w_abs = jnp.abs(w)
+                # u_abs = jnp.abs(u) * jnp.cos(uang_delta)
+                # v_abs = jnp.abs(v) * jnp.cos(vang_delta)
+                # w_abs = jnp.abs(w)
 
-                res = jnp.sqrt(u_abs**2 + v_abs**2 + w_abs**2)
+                # res = jnp.sqrt(u_abs**2 + v_abs**2 + w_abs**2)
                 # res = w_abs # TODO: DECIDE HOW MEAN IS CALCULATED
                 # res = jnp.mean(jnp.abs(w_sol))
+
+
+                u_abs = jnp.abs(u)
+                v_abs = jnp.abs(v)
+                w_abs = jnp.abs(w)
+
+                t = jnp.linspace(0, 2*np.pi/omega, 30)
+                func = jnp.sqrt(u_abs ** 2 * jnp.sin(omega * t + uang) ** 2 +
+                                v_abs ** 2 * jnp.sin(omega * t + vang) ** 2 +
+                                w_abs ** 2 * jnp.sin(omega * t + wang) ** 2)
+
+                res = jnp.max(func)
 
                 return res
 
             _solve_p = jax.tree_util.Partial(_solve,
                                              m=self.mats,
-                                             transform=self.material.get_transform(self.geometry.height),
+                                             transform=self.material.get_ABD_transform(self.geometry.height),
                                              I0=self.I0,
                                              I0Corr=self.I0Corr,
                                              I1=self.I1,

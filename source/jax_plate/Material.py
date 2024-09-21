@@ -91,7 +91,29 @@ class Material(abc.ABC):
             return True
 
     @abc.abstractmethod
-    def get_transform(h: float) -> Callable:
+    def get_ABD_transform(h: float) -> Callable:
+        """
+        Returns a function that transforms elastic moduli into A_ij, B_ij, D_ij
+        matrix components (complex moduli) in the following order:
+        [11, 12, 16, 22, 26, 66]. May include frequency dependece,
+        taking frequency omega as the second argument.
+
+        Parameters
+        ----------
+        h : float
+            Height of a plate.
+
+        Returns
+        -------
+        Callable
+            Tranform function with signature `f(array_of_parameters, omega) ->
+            tuple[jax.Array, jax.Array, jax.Array]`.
+
+        """
+        pass
+
+    @abc.abstractmethod
+    def get_D_transform(h: float) -> Callable:
         """
         Returns a function that transforms elastic moduli into flexural rigity
         matrix components (complex moduli) D_ij in the following
@@ -106,7 +128,8 @@ class Material(abc.ABC):
         Returns
         -------
         Callable
-            Tranform function with signature `f(array_of_parameters, omega)`.
+            Tranform function with signature `f(array_of_parameters, omega) ->
+            jax.Array`.
 
         """
         pass
@@ -189,7 +212,28 @@ class Isotropic(Material):
         return (self.E, self.G, self.beta)
 
     @staticmethod
-    def get_transform(h: float) -> Callable:
+    def get_ABD_transform(h: float) -> Callable:
+        def _transform(params, *args, _h):
+            E = params[0]
+            G = params[1]
+            beta = params[2]
+
+            nu = E / (2.0 * G) - 1.0
+
+            A = E * _h / (1 - nu**2)
+            D = A * _h ** 2 / 12.0
+
+            arr = jnp.array([1.0, nu, 0.0, 1.0, 0.0, (1 - nu) / 2]) * (1 + 1j * beta)
+
+            As = A * arr
+            Bs = jnp.zeros_like(arr)
+            Ds = D * arr
+            return As, Bs, Ds
+
+        return Partial(_transform, _h=h)
+
+    @staticmethod
+    def get_D_transform(h: float) -> Callable:
         def _transform(params, *args, _h):
             E = params[0]
             G = params[1]
@@ -224,7 +268,7 @@ class Orthotropic(Material):
         return (self.E1, self.E2, self.G12, self.nu12, self.beta)
 
     @staticmethod
-    def get_transform(h: float) -> Callable:
+    def get_ABD_transform(h: float) -> Callable:
         def _transform(params, *args, _h):
             E1 = params[0]
             E2 = params[1]
@@ -235,8 +279,37 @@ class Orthotropic(Material):
             E_ratio = E2 / E1
             nu21 = E_ratio * nu12
 
-            D11 = E1 * h ** 3 / (12 * (1 - nu12 * nu21))
-            D66 = G12 * h ** 3 / 12
+            A11 = E1 * _h / (1 - nu12 * nu21)
+            A12 = nu21 * A11
+            A22 = E2/E1 * A11
+            A66 = G12 * _h
+
+            D11 = E1 * _h ** 3 / (12 * (1 - nu12 * nu21))
+            D66 = G12 * _h ** 3 / 12
+            D12 = nu21*D11
+            D22 = D11/E_ratio
+
+            As = jnp.array([A11, A12, 0.0, A22, 0.0, A66]) * (1 + 1j * beta)
+            Bs = jnp.zeros_like(As)
+            Ds = jnp.array([D11, D12, 0.0, D22, 0.0, D66]) * (1 + 1j * beta)
+            return As, Bs, Ds
+
+        return Partial(_transform, _h=h)
+
+    @staticmethod
+    def get_D_transform(h: float) -> Callable:
+        def _transform(params, *args, _h):
+            E1 = params[0]
+            E2 = params[1]
+            G12 = params[2]
+            nu12 = params[3]
+            beta = params[4]
+
+            E_ratio = E2 / E1
+            nu21 = E_ratio * nu12
+
+            D11 = E1 * _h ** 3 / (12 * (1 - nu12 * nu21))
+            D66 = G12 * _h ** 3 / 12
             D12 = nu21*D11
             D22 = D11/E_ratio
 
@@ -273,7 +346,40 @@ class OrthotropicD4(Material):
                 self.b1, self.b2, self.b3, self.b4)
 
     @staticmethod
-    def get_transform(h: float) -> Callable:
+    def get_ABD_transform(h: float) -> Callable:
+        def _transform(params, *args, _h):
+            b1 = params[4]
+            b2 = params[5]
+            b3 = params[6]
+            b4 = params[7]
+
+            E1 = params[0] * (1 + 1j * b1)
+            E2 = params[1] * (1 + 1j * b2)
+            G12 = params[2] * (1 + 1j * b3)
+            nu12 = params[3] * (1 + 1j * b4)
+
+            E_ratio = E2 / E1
+            nu21 = E_ratio * nu12
+
+            A11 = E1 * _h / (1 - nu12 * nu21)
+            A12 = nu21 * A11
+            A22 = E2/E1 * A11
+            A66 = G12 * _h
+
+            D11 = E1 * h ** 3 / (12 * (1 - nu12 * nu21))
+            D66 = G12 * h ** 3 / 12
+            D12 = nu21*D11
+            D22 = D11/E_ratio
+
+            As = jnp.array([A11, A12, 0.0, A22, 0.0, A66])
+            Bs = jnp.zeros_like(As)
+            Ds = jnp.array([D11, D12, 0.0, D22, 0.0, D66])
+            return As, Bs, Ds
+
+        return Partial(_transform, _h=h)
+
+    @staticmethod
+    def get_D_transform(h: float) -> Callable:
         def _transform(params, *args, _h):
             b1 = params[4]
             b2 = params[5]
@@ -403,7 +509,30 @@ class SOL(Orthotropic):
                                    (Q11, Q12, Q16, Q22, Q26, Q66))
         return A, B, D
 
-    def get_transform(self, h: float) -> Callable:
+    def get_ABD_transform(self, h: float) -> Callable:
+        _matA, _matB, _matD = self._Q_to_ABD_matrices
+
+        A = np.array(_matA.evalf(subs={'h': h}), dtype=np.float64)
+        B = np.array(_matB.evalf(subs={'h': h}), dtype=np.float64)
+        D = np.array(_matD.evalf(subs={'h': h}), dtype=np.float64)
+
+        def _transform(params, *args, _MA, _MB, _MD):
+            E1 = params[0]
+            E2 = params[1]
+            G12 = params[2]
+            nu12 = params[3]
+            beta = params[4]
+
+            den = 1 - E2 / E1 * nu12 ** 2
+            Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
+            As = (_MA @ Q)  * (1 + 1j * beta)
+            Bs = (_MB @ Q)  * (1 + 1j * beta)
+            Ds = (_MD @ Q)  * (1 + 1j * beta)
+            return As, Bs, Ds
+
+        return Partial(_transform, _MA=A, _MB=B, _MD=D)
+
+    def get_D_transform(self, h: float) -> Callable:
         if self.is_mps:
             _, _, _mat = self._Q_to_ABD_matrices
 
@@ -416,35 +545,16 @@ class SOL(Orthotropic):
                 nu12 = params[3]
                 beta = params[4]
 
-                den = 1 - E1 / E2 * nu12 ** 2
+                den = 1 - E2 / E1 * nu12 ** 2
                 Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
                 Ds = (_M @ Q)  * (1 + 1j * beta)
                 return Ds
 
             return Partial(_transform, _M=A)
 
-        else:
-            _matA, _matB, _matD = self._Q_to_ABD_matrices
-
-            A = np.array(_matA.evalf(subs={'h': h}), dtype=np.float64)
-            B = np.array(_matB.evalf(subs={'h': h}), dtype=np.float64)
-            D = np.array(_matD.evalf(subs={'h': h}), dtype=np.float64)
-
-            def _transform(params, *args, _MA, _MB, _MD):
-                E1 = params[0]
-                E2 = params[1]
-                G12 = params[2]
-                nu12 = params[3]
-                beta = params[4]
-
-                den = 1 - E1 / E2 * nu12 ** 2
-                Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
-                As = (_MA @ Q)  * (1 + 1j * beta)
-                Bs = (_MB @ Q)  * (1 + 1j * beta)
-                Ds = (_MD @ Q)  * (1 + 1j * beta)
-                return As, Bs, Ds
-
-            return Partial(_transform, _MA=A, _MB=B, _MD=D)
+        else: # Will not be implemented, as physical problem would be incorrect
+            raise NotImplementedError('Transform without A_ij and B_ij matrices'
+                                      'for not midplane-symmetric composites.')
 
 
 class SymmetricalSOL(SOL):
@@ -468,7 +578,30 @@ class SymmetricalSOL(SOL):
     def _get_param_tuple(self) -> tuple:
         return (self.E1, self.G12, self.nu12, self.beta)
 
-    def get_transform(self, h: float) -> Callable:
+    def get_ABD_transform(self, h: float) -> Callable:
+        _matA, _matB, _matD = self._Q_to_ABD_matrices
+
+        A = np.array(_matA.evalf(subs={'h': h}), dtype=np.float64)
+        B = np.array(_matB.evalf(subs={'h': h}), dtype=np.float64)
+        D = np.array(_matD.evalf(subs={'h': h}), dtype=np.float64)
+
+        def _transform(params, *args, _MA, _MB, _MD):
+            E1 = params[0]
+            E2 = params[0]
+            G12 = params[1]
+            nu12 = params[2]
+            beta = params[3]
+
+            den = 1 - E2 / E1 * nu12 ** 2
+            Q = jnp.array([E1/den, nu12 * E2 / den, 0, E2 / den, 0, G12])
+            As = (_MA @ Q)  * (1 + 1j * beta)
+            Bs = (_MB @ Q)  * (1 + 1j * beta)
+            Ds = (_MD @ Q)  * (1 + 1j * beta)
+            return As, Bs, Ds
+
+        return Partial(_transform, _MA=A, _MB=B, _MD=D)
+
+    def get_D_transform(self, h: float) -> Callable:
         if self.is_mps:
             _, _, _mat = self._Q_to_ABD_matrices
 
@@ -488,8 +621,9 @@ class SymmetricalSOL(SOL):
 
             return Partial(_transform, _M=A)
 
-        else:
-            _matA, _matB, _matD = self._Q_to_ABD_matrices
+        else: # Will not be implemented, as physical problem would be incorrect
+            raise NotImplementedError('Transform without A_ij and B_ij matrices'
+                                      'for not midplane-symmetric composites.')
 
             A = np.array(_matA.evalf(subs={'h': h}), dtype=np.float64)
             B = np.array(_matB.evalf(subs={'h': h}), dtype=np.float64)
