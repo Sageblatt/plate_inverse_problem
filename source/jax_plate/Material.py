@@ -98,6 +98,7 @@ class Material(abc.ABC):
         else:
             return True
 
+    @staticmethod
     @abc.abstractmethod
     def get_ABD_transform(h: float) -> Callable:
         """
@@ -120,6 +121,7 @@ class Material(abc.ABC):
         """
         pass
 
+    @staticmethod
     @abc.abstractmethod
     def get_D_transform(h: float) -> Callable:
         """
@@ -142,12 +144,13 @@ class Material(abc.ABC):
         """
         pass
 
+    @staticmethod
     @abc.abstractmethod
-    def _get_constr_func_bounds(self,
-                                scaling_params: np.ndarray | float
-                                ) -> tuple[Callable, np.ndarray, np.ndarray]:
+    def _get_nonlin_constr(scaling_params: np.ndarray | float = 1.0
+                           ) -> tuple[Callable, np.ndarray, np.ndarray]:
         """
-        Method that returns constraints of material parameters in form:
+        Method that returns nonlinear constraints of material parameters in the
+        following form:
             lb <= fun(x) <= ub,
         where `x` is the array of material parameters, `lb`, `fun(x)` and `ub`
         are arrays of size `n` -- overall amount of inequalities.
@@ -164,15 +167,23 @@ class Material(abc.ABC):
             `fun`, `lb` and `ub` respectively. `fun` is compatible with `jax`
             transforms.
 
+        None
+            If the material doesn`t have any nonlinear constraints.
+
         """
         pass
 
-    @classmethod
-    def get_constraints(cls,
-                        scaling_params: np.ndarray = None
-                        ) -> scipy.optimize.NonlinearConstraint:
+    @staticmethod
+    @abc.abstractmethod
+    def _get_lin_constr(scaling_params: np.ndarray | float = 1.0
+                        ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
         """
-        Method that returns scipy constraint to be used in optimization.
+        Method that returns linear constraints of material parameters in the
+        following form:
+            lb <= A @ x <= ub,
+        where `x` is the array (size `n`) of material parameters, `A` is a
+        matrix of shape (`m`, `n`), `lb`, and `ub` are arrays of size `m` --
+        overall amount of inequalities, `n` is a size of parameter space.
 
         Parameters
         ----------
@@ -182,8 +193,42 @@ class Material(abc.ABC):
 
         Returns
         -------
+        (np.ndarray, np.ndarray, np.ndarray)
+            `A`, `lb` and `ub` respectively.
+
+        None
+            If the material doesn`t have any linear constraints.
+
+        """
+        pass
+
+    @classmethod
+    def get_constraints(cls,
+                        scaling_params: np.ndarray = None
+                        ) -> list[scipy.optimize.NonlinearConstraint,
+                                  scipy.optimize.LinearConstraint]:
+        """
+        Method that returns scipy constraints to be used in optimization via
+        scipy.optimize routines.
+
+        Parameters
+        ----------
+        scaling_params : numpy.ndarray
+            Parameters that are used for scaling elastic moduli during
+            optimization. The default is None (no scaling applied).
+
+        Returns
+        -------
+        One of the following:
+
+        list[scipy.optimize.NonlinearConstraint, scipy.optimize.LinearConstraint]
+            When a material class has both constraints on elastic parameters.
+
         scipy.optimize.NonlinearConstraint
-            Constraint object.
+            When a material has only nonlinear constraints.
+
+        scipy.optimize.LinearConstraint
+            When a material has only linear constraints.
 
         """
         if scaling_params is None:
@@ -191,17 +236,36 @@ class Material(abc.ABC):
         else:
             scaling_params = scaling_params.copy()
 
-        fun, lb, ub = cls._get_constr_func_bounds(scaling_params)
-        fun_jac = jax.jit(jax.jacobian(fun))
+        res_nonlin = cls._get_nonlin_constr(scaling_params)
+        if res_nonlin is not None:
+            fun, lb, ub = res_nonlin
+            fun_jac = jax.jit(jax.jacobian(fun))
 
-        def dot_func(x, v):
-            return jax.numpy.dot(fun(x), v)
+            def dot_func(x, v):
+                return jax.numpy.dot(fun(x), v)
 
-        fun_hess = jax.jit(jax.hessian(dot_func))
-        return scipy.optimize.NonlinearConstraint(fun, lb, ub, jac=fun_jac,
-                                                  hess=fun_hess)
+            fun_hess = jax.jit(jax.hessian(dot_func))
+            res_nonlin = scipy.optimize.NonlinearConstraint(fun, lb, ub,
+                                                            jac=fun_jac,
+                                                            hess=fun_hess)
 
-    def check_parameters(self, params: np.ndarray) -> bool:
+        res_lin = cls._get_lin_constr(scaling_params)
+        if res_lin is not None:
+            A, lb, ub = res_lin
+            res_lin = scipy.optimize.LinearConstraint(A, lb, ub)
+
+        if res_nonlin is None:
+            return res_lin
+
+        elif res_lin is None:
+            return res_nonlin
+
+        else:
+            return [res_lin, res_nonlin]
+
+    @classmethod
+    def check_parameters(cls, params: np.ndarray,
+                         scaling_params: np.ndarray | float = 1.0) -> bool:
         """
         Method that checks if parameters are correct. For instance, for isotropic
         material Young's modulus E cannot be negative.
@@ -211,17 +275,37 @@ class Material(abc.ABC):
         params : numpy.ndarray
             Material parameters to check for correctness.
 
+        caling_params : numpy.ndarray
+            Parameters that are used for scaling elastic moduli during
+            optimization. The default is None (no scaling applied).
+
         Returns
         -------
         bool
             `True` if all elastic moduli are correct, else `False`.
 
         """
-        fun, lb, ub = self._get_constr_func_bounds()
-        fun_vals = np.array(fun(params))
-        lhs = lb <= fun_vals
-        rhs = fun_vals <= ub
-        return np.all(lhs * rhs)
+        res_nonlin = cls._get_nonlin_constr(scaling_params)
+        if res_nonlin is None:
+            nonlin_check = True
+        else:
+            fun, lb, ub = res_nonlin
+            fun_vals = np.array(fun(params))
+            lhs = lb <= fun_vals # TODO: check if `<` should be here
+            rhs = fun_vals <= ub
+            nonlin_check = np.all(lhs * rhs)
+
+        res_lin = cls._get_lin_constr(scaling_params)
+        if res_lin is None:
+            lin_check = True
+        else:
+            A, lb, ub = res_lin
+            fun_vals = A @ params
+            lhs = lb <= fun_vals
+            rhs = fun_vals <= ub
+            lin_check = np.all(lhs * rhs)
+
+        return lin_check and nonlin_check
 
     def get_save_dict(self) -> dict:
         """
@@ -322,23 +406,31 @@ class Isotropic(Material):
         return Partial(_transform, _h=h)
 
     @staticmethod
-    def _get_constr_func_bounds(scaling_params: np.ndarray | float = 1.0):
+    def _get_nonlin_constr(scaling_params: np.ndarray | float = 1.0):
+        return
+
+    @staticmethod
+    def _get_lin_constr(scaling_params: np.ndarray | float = 1.0):
         """
         E > 0
         G > 0
         beta > 0
-        0 < nu < 0.5 (2G < E < 3G)
+        E - 2G > 0
+        -E + 3G > 0 (last two are equal to 2G < E < 3G or 0 < nu < 0.5)
         """
-        def constr_func(params):
-            params = params * scaling_params
-            nu = params[0] / (2.0 * params[1]) - 1.0
-            return jnp.array([params[0], params[1],
-                              params[2], nu], dtype=jnp.float64)
+        A = np.eye(5, 3)
+        A[3, 0] = 1.0
+        A[4, 0] = -1.0
+        A[3, 1] = -2.0
+        A[4, 1] = 3.0
+
+        if isinstance(scaling_params, float):
+            A *= scaling_params
+        else:
+            A = A * scaling_params[:, None].T
 
         eps = 1e-12
-        lb = np.full(4, eps)
-        ub = np.array([np.inf, np.inf, np.inf, 0.5 - eps])
-        return constr_func, lb, ub
+        return A, eps, np.inf
 
 
 class Orthotropic(Material):
@@ -412,29 +504,42 @@ class Orthotropic(Material):
         return Partial(_transform, _h=h)
 
     @staticmethod
-    def _get_constr_func_bounds(scaling_params: np.ndarray | float = 1.0):
+    def _get_nonlin_constr(scaling_params: np.ndarray | float = 1.0):
+        """
+        sqrt(E1/E2) - nu12 > 0
+        """
+        def constr_func(params):
+            params = params * scaling_params
+            nu12_coef = jnp.sqrt(params[0] / params[1]) - params[3]
+            return jnp.array([nu12_coef], dtype=jnp.float64)
+
+        eps = 1e-12
+        return constr_func, eps, np.inf
+
+    @staticmethod
+    def _get_lin_constr(scaling_params: np.ndarray | float = 1.0):
         """
         E1 > 0
         E2 > 0
         G12 > 0
         nu12 > 0
         beta > 0
-        sqrt(E1/E2) - nu12 > 0
         E1 - E2 > 0
-        E1 - G12 > 0
+        1.05*E1 - G12 > 0 # G12 in theory can be greater than E1, but rarely in practice
         """
-        def constr_func(params):
-            params = params * scaling_params
-            nu12_coef = jnp.sqrt(params[0] / params[1]) - params[3]
-            return jnp.array([params[0], params[1], params[2],
-                              params[3], params[4], nu12_coef,
-                              params[0] - params[1],
-                              params[0] - params[2]], dtype=jnp.float64)
+        A = np.eye(7, 5)
+        A[5, 0] = 1.0
+        A[5, 1] = -1.0
+        A[6, 0] = 1.05
+        A[6, 2] = -1.0
+
+        if isinstance(scaling_params, float):
+            A *= scaling_params
+        else:
+            A = A * scaling_params[:, None].T
 
         eps = 1e-12
-        lb = np.full(8, eps)
-        ub = np.full(8, np.inf)
-        return constr_func, lb, ub
+        return A, eps, np.inf
 
 
 class OrthotropicD4(Material):
@@ -523,7 +628,11 @@ class OrthotropicD4(Material):
         return Partial(_transform, _h=h)
 
     @staticmethod
-    def _get_constr_func_bounds(): # TODO: implement
+    def _get_nonlin_constr(scaling_params: np.ndarray | float = 1.0):
+        raise NotImplementedError() # TODO: implement
+
+    @staticmethod
+    def _get_lin_constr(scaling_params: np.ndarray | float = 1.0):
         raise NotImplementedError()
 
 
@@ -748,7 +857,11 @@ class SymmetricalSOL(SOL):
                                       'for not midplane-symmetric composites.')
 
     @staticmethod
-    def _get_constr_func_bounds(scaling_params: np.ndarray | float = 1.0):
+    def _get_nonlin_constr(scaling_params: np.ndarray | float = 1.0):
+        return
+
+    @staticmethod
+    def _get_lin_constr(scaling_params: np.ndarray | float = 1.0):
         """
         E1 > 0
         G12 > 0
@@ -756,39 +869,20 @@ class SymmetricalSOL(SOL):
         beta > 0
         E1 - G12 > 0
         """
-        def constr_func(params):
-            params = params * scaling_params
-            return jnp.array([params[0], params[1], params[2], params[3],
-                              params[0] - params[1]], dtype=jnp.float64)
-
-        eps = 1e-12
-        lb = np.full(5, eps)
-        ub = np.full(5, np.inf)
-        ub[2] = 1.0 - eps
-        return constr_func, lb, ub
-
-    @staticmethod
-    def get_constraints(scaling_params: np.ndarray | float = None
-                        ) -> scipy.optimize.LinearConstraint:
-        """
-        Overrides interface method Material.get_constraints()
-        as SymmetricalSOL has `linear` constraints.
-
-        """
-        if scaling_params is None:
-            scaling_params = np.full(4, 1.0)
-
         A = np.eye(5, 4)
         A[4, 0] = 1.0
         A[4, 1] = -1.0
 
-        A = A * scaling_params[:, None].T
+        if isinstance(scaling_params, float):
+            A *= scaling_params
+        else:
+            A = A * scaling_params[:, None].T
 
         eps = 1e-12
         lb = np.full(5, eps)
         ub = np.full(5, np.inf)
         ub[2] = 1.0 - eps
-        return scipy.optimize.LinearConstraint(A, lb, ub)
+        return A, lb, ub
 
 
 def get_material(main_arg: str | float | int | dict,
