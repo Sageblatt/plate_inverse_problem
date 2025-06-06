@@ -202,11 +202,11 @@ def savemesh( mesh, filename ) :
 
         # triangles
         for tri_index, triangle in enumerate( mesh.triangles ) :
-            the_file.write( str( list( np.array( triangle ) + 1 ) )[1:-1].replace(',',' ') + ' ' + str( mesh.triangle_labels[tri_index] ) + '\n' )
+            the_file.write( str( np.array( triangle ) + 1 )[1:-1] + ' ' + str( mesh.triangle_labels[tri_index] ) + '\n' )
 
         # edges
         for edge in mesh.get_boundary_edges() :
-            the_file.write( str( list( np.array( edge ) + np.array([ 1, 1, 0 ]) ) )[1:-1].replace(',',' ') + '\n' )
+            the_file.write( str( np.array( edge ) + np.array([ 1, 1, 0 ]) )[1:-1] + '\n' )
 
     return filename
 
