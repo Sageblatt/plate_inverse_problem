@@ -373,9 +373,6 @@ class Problem:
             self.I2Corr = rho_corr / 3 * ((self.geometry.height/2 + self.accelerometer.height)**3
                                           - self.geometry.height**3/8)
 
-            self.I1 = rho_corr / 2 * ((self.geometry.height/2 + self.accelerometer.height)**2
-                                      - self.geometry.height**2/4)
-
 
     @functools.cache
     def getFRFunction(self) -> Callable:
@@ -432,7 +429,7 @@ class Problem:
                                              cpu=self.n_cpu)
 
         else: # Non symmetric case
-            def _solve(f, params, m, transform, I0, I0Corr, I1,
+            def _solve(f, params, m, transform, I0, I0Corr,
                        I2, I2Corr, rhs_vec, solver_num, n_cpu,
                        Lh_size, interp_mat, interp_mat_Lh,
                        interp_mat_Wx, interp_mat_Wy,
@@ -443,8 +440,7 @@ class Problem:
                 mat = jnp.zeros_like(m[0], dtype=np.complex128)
                 mat += -omega**2 * (I0 * (m[18] + m[20] + m[22]) +
                                     I0Corr * (m[19] + m[21] + m[23]) +
-                                    I2 * m[24] + I2Corr * m[25] +
-                                    I1 * (m[26] + m[27]))
+                                    I2 * m[24] + I2Corr * m[25])
                 for i in range(6):
                     mat += A[i] * m[i] + B[i] * m[i + 6] + D[i] * m[i + 12]
 
@@ -503,7 +499,6 @@ class Problem:
                                              transform=self.material.get_ABD_transform(self.geometry.height),
                                              I0=self.I0,
                                              I0Corr=self.I0Corr,
-                                             I1=self.I1,
                                              I2=self.I2,
                                              I2Corr=self.I2Corr,
                                              rhs_vec=self.vec,
