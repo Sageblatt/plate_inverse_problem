@@ -32,3 +32,10 @@ Implementation of several first and second order optimization methods is also pr
 9. C++ compiler with OpenMP support
 10. CMake 3.10+
 11. Make
+
+## References
+
+1. Aksenov, V., Vasyukov, A. and Beklemysheva, K. (2024) Acquiring elastic properties of thin composite structure from vibrational testing data. Journal of Inverse and Ill-posed Problems, Vol. 32 (Issue 3), pp. 467-484. https://doi.org/10.1515/jiip-2022-0081
+2. Lavrenkov, S., Vasyukov, A. (2024). Experimental Data Compression for GPU-Based Solution of Inverse Coefficient Problem for Vibrational Testing Data. Communications in Computer and Information Science, Vol 1914. Springer, Cham. https://doi.org/10.1007/978-3-031-52470-7_24
+3. Lavrenkov, S., Smirnov, I., Kravchenko, D., Beklemysheva, K. and Vasyukov, A. (2025) “Numerical Modeling of Complex Geometry Thin Composite Structures under Vibrational Testing”, Supercomputing Frontiers and Innovations, 11(4), pp. 15–28. https://doi.org/10.14529/jsfi240402.2
+4. Original project repo: https://github.com/viviaxenov/plate_inverse_problem.
