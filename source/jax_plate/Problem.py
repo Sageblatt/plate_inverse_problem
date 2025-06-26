@@ -349,6 +349,9 @@ class Problem:
             self.interp_mat_Lh = processed_ff_output[3]
             self.Lh_size = processed_ff_output[4]
             self.Mh_size = processed_ff_output[5]
+            self.mesh = processed_ff_output[6]
+            self.interp_mat_Wx = processed_ff_output[7]
+            self.interp_mat_Wy = processed_ff_output[8]
 
             if self.accelerometer is not None:
                 # rho_corr = (
@@ -387,7 +390,7 @@ class Problem:
             test point.
 
         """
-        if self.material.is_mps and self.accelerometer is None:
+        if self.material.is_mps and self.accelerometer is None: # TODO: add wx, wy to symmetric case
             def _solve(f, params, Ks, fKs, MInertia, fInertia,
                        interpolation_vector, interpolation_value_from_bc,
                        transform, solv_num, cpu):
@@ -428,10 +431,12 @@ class Problem:
                                              solv_num=self.solver_num,
                                              cpu=self.n_cpu)
 
-        else: # Non symmetrical case
+        else: # Non symmetric case
             def _solve(f, params, m, transform, I0, I0Corr, I1,
                        I2, I2Corr, rhs_vec, solver_num, n_cpu,
-                       Lh_size, interp_mat, interp_mat_Lh): # TODO:  DECIDE IF u AND v COMPONENTS AFFECT AFC
+                       Lh_size, interp_mat, interp_mat_Lh,
+                       interp_mat_Wx, interp_mat_Wy,
+                       acc_h, acc_h_eff, acc_ts):
                 omega = 2 * np.pi * f
                 A, B, D = transform(params, omega)
 
@@ -453,9 +458,11 @@ class Problem:
                 u_sol = interp_mat_Lh @ sol[:Lh_size]
                 v_sol = interp_mat_Lh @ sol[Lh_size:2*Lh_size]
                 w_sol = interp_mat @ sol[2*Lh_size:]
+                wx_sol = interp_mat_Wx @ sol[2*Lh_size:]
+                wy_sol = interp_mat_Wy @ sol[2*Lh_size:]
 
-                u = jnp.mean(u_sol)
-                v = jnp.mean(v_sol)
+                u = jnp.mean(u_sol - acc_h_eff * acc_h * wx_sol)
+                v = jnp.mean(v_sol - acc_h_eff * acc_h * wy_sol)
                 w = jnp.mean(w_sol)
 
                 uang = jnp.angle(u)
@@ -467,23 +474,27 @@ class Problem:
 
                 # u_abs = jnp.abs(u) * jnp.cos(uang_delta)
                 # v_abs = jnp.abs(v) * jnp.cos(vang_delta)
-                # w_abs = jnp.abs(w)
+                u_abs = jnp.abs(u) * acc_ts
+                v_abs = jnp.abs(v) * acc_ts
+                w_abs = jnp.abs(w)
 
-                # res = jnp.sqrt(u_abs**2 + v_abs**2 + w_abs**2)
+                res = jnp.sqrt(u_abs**2 + v_abs**2 + w_abs**2)
                 # res = w_abs # TODO: DECIDE HOW MEAN IS CALCULATED
                 # res = jnp.mean(jnp.abs(w_sol))
 
 
-                u_abs = jnp.abs(u)
-                v_abs = jnp.abs(v)
-                w_abs = jnp.abs(w)
+                # u_abs = jnp.abs(u)
+                # v_abs = jnp.abs(v)
+                # w_abs = jnp.abs(w)
 
-                t = jnp.linspace(0, 2*np.pi/omega, 30)
-                func = jnp.sqrt(u_abs ** 2 * jnp.sin(omega * t + uang) ** 2 +
-                                v_abs ** 2 * jnp.sin(omega * t + vang) ** 2 +
-                                w_abs ** 2 * jnp.sin(omega * t + wang) ** 2)
+                # t = jnp.linspace(0, 2*np.pi/omega, 30)
+                # func = jnp.sqrt(u_abs ** 2 * jnp.sin(omega * t + uang) ** 2 +
+                #                 v_abs ** 2 * jnp.sin(omega * t + vang) ** 2 +
+                #                 w_abs ** 2 * jnp.sin(omega * t + wang) ** 2)
 
-                res = jnp.max(func)
+                # res = jnp.max(func) # TODO: choose the appropriate variant
+                # res = jnp.mean(func)
+                # res = jnp.min(func)
 
                 return res
 
@@ -500,7 +511,12 @@ class Problem:
                                              n_cpu=self.n_cpu,
                                              Lh_size=self.Lh_size,
                                              interp_mat=self.interp_mat,
-                                             interp_mat_Lh=self.interp_mat_Lh)
+                                             interp_mat_Lh=self.interp_mat_Lh,
+                                             interp_mat_Wx=self.interp_mat_Wx,
+                                             interp_mat_Wy=self.interp_mat_Wy,
+                                             acc_h=self.accelerometer.height,
+                                             acc_h_eff=self.accelerometer.effective_height,
+                                             acc_ts=self.accelerometer.transverse_sensitivity)
 
         _get_afc = jax.jit(jax.vmap(_solve_p, in_axes=(0, None)))
 

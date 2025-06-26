@@ -198,12 +198,18 @@ def load_matrices_unsymm(fname: str):
 
     real innermult = 0.3;
     border CAccin(t=0., 2*pi){x=xtest + innermult*rAccel*cos(t); y=ytest + innermult*rAccel*sin(t); label=3;}
-    int[int] u2vc = [0];
     mesh accTh = buildmesh(CAccin(64)); // Cubature formula would be better! Disc: https://doi.org/10.1007/s002110050358 ---------------------------------------------
     fespace midVh(accTh, P1); // More intermediate interpolation steps?----------------------------------------------------------
 
+    int[int] u2vc = [0];
+    int[int] u2vc1 = [1];
+    int[int] u2vc2 = [2];
+
     matrix Minterp = interpolate(midVh, Mh, U2Vc=u2vc);
-    matrix MinterpL = interpolate(midVh, Lh, U2Vc=u2vc);
+    matrix MinterpWx = interpolate(midVh, Mh, U2Vc=u2vc1);
+    matrix MinterpWy = interpolate(midVh, Mh, U2Vc=u2vc2);
+
+    matrix MinterpL = interpolate(midVh, Lh);
     """
 
     # WARNING: all parts of the Dirichlet BC should be labelled 1
@@ -261,6 +267,8 @@ def load_matrices_unsymm(fname: str):
         vmarkerLh="array",
         vmarkerMh="array",
         interp="matrix",
+        interpWx="matrix",
+        interpWy="matrix",
         interpL="matrix",
         xtest="real",
         ytest="real",
@@ -310,6 +318,8 @@ def load_matrices_unsymm(fname: str):
     M33I2Correction = ff_output['M33I2Correction']
 
     interp_mat = ff_output['interp'].todense()
+    interp_mat_Wx = ff_output['interpWx'].todense()
+    interp_mat_Wy = ff_output['interpWy'].todense()
     interp_mat_Lh = ff_output['interpL'].todense()
 
     vBCLh = ff_output['vBCLh'] # is zero, so not used
@@ -512,4 +522,5 @@ def load_matrices_unsymm(fname: str):
             KD11, KD12, KD16, KD22, KD26, KD66,
             KM11, KM11Corr, KM22, KM22Corr, KM33,
             KM33Corr, KM33I2, KM33I2Corr, KM13, KM23],
-            rhs_vec, interp_mat, interp_mat_Lh, Lh_size, Mh_size)
+            rhs_vec, interp_mat, interp_mat_Lh, Lh_size, Mh_size,
+            ff_output['Th'], interp_mat_Wx, interp_mat_Wy)

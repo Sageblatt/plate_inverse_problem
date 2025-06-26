@@ -8,10 +8,29 @@ from jax_plate.Utils import get_jax_plate_dir
 class AccelerometerParams:
     """
     Class that represents the list of parameters for given accelerometer type.
+
+    Attributes
+    ----------
+    mass : float
+        Mass of the accelerometer in kg.
+    radius : float
+        Radius of a cylindrical accelerometer in meters.
+    height : float
+        Radius of a cylindrical accelerometer in meters.
+    effective_height : float
+        Ratio from 0.0 to 1.0 representing the exact relative position along
+        vertical axis of the cylinder, where the frequency response
+        is measured. 0 corresponds to cylinder's bottom,
+        1 -- to the top position.
+    transverse_sensitivity : float
+        Accelerometer's relative transverse sensitivity as real number
+        (not in percents!).
     """
     mass: float
     radius: float
-    height: float = None
+    height: float
+    effective_height: float
+    transverse_sensitivity: float
 
 
 class Accelerometer:
@@ -58,6 +77,8 @@ class Accelerometer:
         self.mass = params['mass']
         self.radius = params['radius']
         self.height = params['height']
+        self.effective_height = params['effective_height']
+        self.transverse_sensitivity = params['transverse_sensitivity']
 
 
     @staticmethod

@@ -1,5 +1,7 @@
 {
     "mass": 0.0017,
     "radius": 0.0038,
-    "height": 0.0087
+    "height": 0.0087,
+    "effective_height": 0.5,
+    "transverse_sensitivity": 0.03
 }
