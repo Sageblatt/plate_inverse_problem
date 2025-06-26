@@ -196,11 +196,8 @@ def load_matrices_unsymm(fname: str):
     real[int] vBCLh = BCL(0, Lh, tgv=-1);
     real[int] vBCMh = BCM(0, Mh, tgv=-1);
 
-    //complex[int] vBC0 = concatenate(vBCL, vBCL);
-    //complex[int] vBC = concatenate(vBC0, vBCM);
-
     real innermult = 0.3;
-    border CAccin(t=0., 2*pi){x=offsetAccelX + innermult*rAccel*cos(t); y=offsetAccelY + innermult*rAccel*sin(t); label=3;}
+    border CAccin(t=0., 2*pi){x=xtest + innermult*rAccel*cos(t); y=ytest + innermult*rAccel*sin(t); label=3;}
     int[int] u2vc = [0];
     mesh accTh = buildmesh(CAccin(64)); // Cubature formula would be better! Disc: https://doi.org/10.1007/s002110050358 ---------------------------------------------
     fespace midVh(accTh, P1); // More intermediate interpolation steps?----------------------------------------------------------
@@ -315,8 +312,8 @@ def load_matrices_unsymm(fname: str):
     interp_mat = ff_output['interp'].todense()
     interp_mat_Lh = ff_output['interpL'].todense()
 
-    vBCLh = ff_output['vBCLh']
-    vBCMh = ff_output['vBCMh']
+    vBCLh = ff_output['vBCLh'] # is zero, so not used
+    vBCMh = ff_output['vBCMh'] # for rhs vector
 
     Lh_size = vBCLh.size
     Mh_size = vBCMh.size
@@ -328,6 +325,7 @@ def load_matrices_unsymm(fname: str):
     marker_Lh = ff_output['vmarkerLh']
     marker_Mh = ff_output['vmarkerMh']
 
+    # indices for rows in matrix
     dLh_idx = np.nonzero(marker_Lh)[0] # Dirichlet BC indices for Lh
     dMh_idx = np.nonzero(marker_Mh)[0] # Dirichlet BC indices for Mh
 
