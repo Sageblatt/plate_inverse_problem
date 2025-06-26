@@ -15,9 +15,9 @@ real xtest = offsetAccelX;
 real ytest = offsetAccelY;
 real eps = 1e-8;
 
-int ny = 3; // should be higher than 1
+int ny = 2; // should be higher than 1
 int nx = 15*ny;
-int nAccel = 4*ny;
+int nAccel = 9*ny;
 
 border C1(t=0., 1){x=0; y=Ly/2 - t*rAccel; label=0;}
 border C11(t=0., 1){x=0; y=Ly/2 - rAccel - t*(Ly-rAccel); label=0;}
@@ -26,7 +26,7 @@ border C3(t=0., 1){x=Lx; y=-Ly/2. + t*Ly; label=1;}
 border C4(t=0., 1){x=Lx - t*(Lx-rAccel); y=Ly/2.; label=0;}
 border C44(t=0., 1){x=(1-t)*rAccel; y=Ly/2.; label=0;}
 
-border CAccel(t=0., 2*pi){x=offsetAccelX + rAccel*cos(t); y=offsetAccelY + rAccel*sin(t); label=0;}
+border CAccel(t=pi/2, 5*pi/2){x=offsetAccelX + rAccel*cos(t); y=offsetAccelY + rAccel*sin(t); label=0;}
 
 mesh Th = buildmesh(C1(ny) + C11(2*ny) + C2(nx) + C3(3*ny) + C4(nx-ny) + C44(ny) + CAccel(nAccel));
 //savevtk("ideal_strip_mesh_shifted_fe.vtu", Th);
