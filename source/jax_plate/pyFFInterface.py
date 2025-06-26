@@ -24,8 +24,6 @@ def load_matrices_symm(fname: str) -> dict:
     script += """
     // Boundary condition u = funcBc on Dirichlet border
     func funcBC = 1; // 1 is default
-    // Indicator of the area occupied by the accelerometer (to correct the mass matrix)
-    func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - offsetAccelY)^2));
 
     fespace Vh(Th, P2Morley);
     Vh [u, ux, uy], [v, vx, vy];
@@ -176,7 +174,6 @@ def load_matrices_unsymm(fname: str):
 
     script += """
     real tgv = -1.0;
-    func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - offsetAccelY)^2));
 
     fespace Lh(Th, P1);
     Lh u, v, r, s;

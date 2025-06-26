@@ -32,3 +32,5 @@ border CAccel(t=0., 2*pi){x=offsetAccelX + rAccel*cos(t); y=0 + rAccel*sin(t); l
 
 mesh Th = buildmesh(C1(3*ny) + C2(nx) + C3(3*ny) + C4(nx) + CAccel(nAccel));
 //savevtk("mesh.vtu", Th);
+
+func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - offsetAccelY)^2));

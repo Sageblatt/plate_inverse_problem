@@ -30,3 +30,5 @@ border CAccel(t=0., 2*pi){x=offsetAccelX + rAccel*cos(t); y=offsetAccelY + rAcce
 
 mesh Th = buildmesh(C1(ny) + C11(2*ny) + C2(nx) + C3(3*ny) + C4(nx-ny) + C44(ny) + CAccel(nAccel));
 //savevtk("ideal_strip_mesh_shifted_fe.vtu", Th);
+
+func indAccel = 0.5*(1. + sign(rAccel^2 + eps - (x - offsetAccelX)^2 - (y - offsetAccelY)^2));
